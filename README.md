@@ -165,6 +165,7 @@ DB나 녹화 파일은 신뢰할 수 있는 사람에게만 공유하세요.
 5. Windows 실제 방송 검증, PyInstaller one-folder 및 Inno Setup 설치 파일.
 
 수용 기준과 구현 상태는 [구현 계획](docs/IMPLEMENTATION_PLAN.md),
+현재 수용 기준별 검증 범위는 [수용 기준 점검표](docs/ACCEPTANCE.md),
 설계 결정과 PRD 보완점은 [설계 기록](docs/DECISIONS.md),
 단계별 실행 결과는 [검증 기록](docs/VALIDATION.md)을 확인하세요.
 원문은 [PRD](docs/YouTube_Live_Recorder_Codex_PRD.md)입니다.
