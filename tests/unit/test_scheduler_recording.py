@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from threading import Event
 
 import pytest
 
@@ -110,6 +111,38 @@ def test_scheduled_poll_waits_sixty_seconds(repository, tmp_path):
         assert repository.get_broadcast(item.id).status == B.WAITING
         scheduler.tick(now + timedelta(seconds=60))
         assert metadata.calls == 2
+    finally:
+        manager.shutdown()
+
+
+def test_shutdown_during_metadata_fetch_cannot_start_recording(repository, tmp_path):
+    add(repository)
+    stop = Event()
+
+    class ClosingMetadata:
+        def fetch(self, url):
+            stop.set()
+            return BroadcastMetadata("Abc_123-xYz", "종료 중", "", "", LiveState.LIVE)
+
+    metadata = ClosingMetadata()
+    manager = setup_manager(repository, tmp_path, metadata)
+    try:
+        Scheduler(repository, metadata, manager).tick(utc_now() + timedelta(seconds=1), stop=stop)
+        assert repository.active_session() is None
+        assert repository.list_sessions() == []
+    finally:
+        manager.shutdown()
+
+
+def test_stop_accepting_blocks_late_start(repository, tmp_path):
+    item = add(repository)
+    repository.transition(item.id, B.LIVE_DETECTED)
+    manager = setup_manager(repository, tmp_path, Metadata([]))
+    try:
+        manager.stop_accepting()
+        with pytest.raises(AppError):
+            manager.start(item.id)
+        assert repository.active_session() is None
     finally:
         manager.shutdown()
 

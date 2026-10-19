@@ -39,4 +39,4 @@ class Engine:
 
     def stop(self) -> None:
         self.stop_event.set()
-        self.recordings.stop()
+        self.recordings.stop_accepting()

@@ -33,5 +33,6 @@ class AppPaths:
 
 
 def default_save_folder() -> Path:
-    # GUI 단계에서 Windows Known Folder API를 통해 리디렉션된 Videos 경로도 지원한다.
-    return Path.home() / "Videos" / APP_NAME
+    from youtube_live_recorder.utils.known_folders import videos_folder
+
+    return videos_folder() / APP_NAME

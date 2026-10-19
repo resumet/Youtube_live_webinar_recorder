@@ -63,7 +63,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
 수동 중지한 방송은 취소 상태가 되어 다음 실행에서 자동으로 다시 녹화하지 않습니다.
 정상 완료는 파일 검사와 방송 종료 상태 재확인 후 기록합니다. 시작 구간 완전성은 보장하지 않습니다.
 
-현재 저장 위치 변경은 DB 설정 API를 통해 가능하며 폴더 선택 화면은 3단계에 구현합니다.
+한국어 데스크톱 화면은 다음 명령으로 실행합니다. 설정 화면에서 저장 폴더를 선택할 수 있습니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m youtube_live_recorder --data-dir .runtime gui
+```
+
+방송 정보를 미리 조회하거나 URL만 등록할 수 있습니다. 창의 닫기/최소화는 트레이로 숨기며,
+왼쪽 아래 또는 트레이 메뉴의 **완전 종료**가 감지를 중단하고 진행 파일을 정리합니다.
+트레이를 사용할 수 없는 환경에서는 창을 닫을 때 완전 종료 여부를 확인합니다.
 임시 산출물은 녹화 폴더의 `.ylr-work/<세션 UUID>/`에 보존하며 자동 삭제하지 않습니다.
 미완료 활성 세션이 남은 DB는 현재 `watch` 시작을 거부합니다. 4단계에서 파일 복구·감지 재개를
 연결할 예정이며 지금 DB를 임의로 지우거나 상태를 성공으로 바꾸면 안 됩니다.
@@ -80,7 +88,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
 |---|---|
 | DB | `%LOCALAPPDATA%\YouTubeLiveRecorder\data\app.db` |
 | 로그 | `%LOCALAPPDATA%\YouTubeLiveRecorder\logs\app.log` |
-| 기본 녹화 폴더 설정 | `%USERPROFILE%\Videos\YouTubeLiveRecorder` |
+| 기본 녹화 폴더 설정 | Windows 동영상 폴더 아래 `YouTubeLiveRecorder` (이동된 동영상 폴더 지원) |
 
 개발·테스트에는 `--data-dir .runtime`을 권장합니다. 환경변수 `YLR_DATA_DIR`도 지원하며
 명령행 지정이 우선입니다. 녹화 폴더는 녹화 시작 시 생성하며 여유 공간과 쓰기 권한을 검사합니다.

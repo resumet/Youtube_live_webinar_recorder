@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -54,6 +55,7 @@ class CaptureRequest:
     quality: Quality
     work_directory: Path
     from_start: bool
+    on_quality: Callable[[int], None] | None = None
 
 
 @dataclass(frozen=True)

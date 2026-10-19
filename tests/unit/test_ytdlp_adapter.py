@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -23,6 +24,26 @@ class FixtureRunner:
     def run(self, args, **kwargs):
         self.args = args
         return self.result
+
+
+def test_actual_quality_callback_from_download_event(tmp_path):
+    class ReportingRunner:
+        def run(self, args, **kwargs):
+            for line in ("YLR_FORMAT null", "YLR_FORMAT 720", "YLR_FORMAT invalid"):
+                kwargs["on_line"]("stdout", line)
+            return ProcessResult(0, "", "")
+
+    heights = []
+    adapter = YtdlpAdapter(
+        Toolchain(Path("ffmpeg"), Path("ffprobe"), Path("deno")), ReportingRunner()
+    )
+    adapter.capture(
+        CaptureRequest(
+            "https://youtu.be/Abc_123-xYz", Quality.P1080, tmp_path, False, heights.append
+        ),
+        Event(),
+    )
+    assert heights == [720]
 
 
 def test_scheduled_metadata_works_without_download_formats():

@@ -397,3 +397,29 @@ class Repository:
                 "SELECT * FROM recording_sessions ORDER BY started_at DESC"
             ).fetchall()
         return [_session(row) for row in rows]
+
+    def edit_broadcast(self, identifier: str, quality: Quality, filename: str) -> None:
+        quality = Quality(quality)
+        with self.database.transaction() as connection:
+            item = connection.execute(
+                "SELECT status FROM broadcasts WHERE id=?", (identifier,)
+            ).fetchone()
+            if item is None:
+                raise KeyError("등록한 방송을 찾을 수 없습니다.")
+            if item[0] not in {"WAITING", "ERROR", "ERROR_RETRYABLE", "REPLAY_WAIT", "MISSED_BUSY"}:
+                raise AppError(ErrorCode.INVALID_STATE)
+            connection.execute(
+                "UPDATE broadcasts SET preferred_quality=?,custom_filename=?,updated_at=? "
+                "WHERE id=?",
+                (quality, filename, to_iso(utc_now()), identifier),
+            )
+
+    def record_actual_quality(self, session_id: str, height: int) -> None:
+        if not 0 < height <= 16384:
+            return
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE recording_sessions SET actual_quality=?,updated_at=? "
+                "WHERE id=? AND status='RUNNING'",
+                (f"{height}p", to_iso(utc_now()), session_id),
+            )

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -94,7 +95,10 @@ class ProcessRunner:
                     while sizes[name] > output_limit and len(outputs[name]) > 1:
                         sizes[name] -= len(outputs[name].popleft())
                     if on_line:
-                        on_line(name, line)
+                        try:
+                            on_line(name, line)
+                        except Exception:
+                            logging.getLogger(__name__).exception("녹화 진행 정보 갱신 실패")
             finally:
                 stream.close()
 

@@ -54,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = commands.add_parser("inspect", help="실제 방송 정보와 라이브 상태 조회")
     inspect.add_argument("url", help="YouTube 방송 URL")
     commands.add_parser("watch", help="대기 방송 자동 감지·녹화 시작 (Ctrl+C로 안전 중지)")
+    commands.add_parser("gui", help="한국어 데스크톱 프로그램 실행")
     return parser
 
 
@@ -77,6 +78,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         context = bootstrap(args.data_dir)
+        if args.command == "gui":
+            from youtube_live_recorder.ui.application import run_gui
+
+            return run_gui(context)
         if args.command == "init":
             print(f"초기화 완료 · 데이터베이스: {context.paths.database}")
             print(f"로그 폴더: {context.paths.logs}")

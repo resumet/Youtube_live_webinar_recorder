@@ -26,16 +26,20 @@ class Scheduler:
         self.repository, self.metadata, self.recordings = repository, metadata, recordings
         self.jitter = jitter
 
-    def tick(self, now: datetime | None = None) -> None:
+    def tick(self, now: datetime | None = None, *, stop: Event | None = None) -> None:
         now = now or utc_now()
         # 등록 순 정렬은 Repository가 보장한다. 동일 tick에 시작한 방송은 먼저 등록한 건 우선.
         for item in self.repository.list_broadcasts():
+            if stop is not None and stop.is_set():
+                break
             if item.status not in {B.WAITING, B.ERROR_RETRYABLE, B.LIVE_DETECTED}:
                 continue
             if item.next_check_at and from_iso(item.next_check_at) > now:
                 continue
             try:
                 metadata = self.metadata.fetch(item.original_url)
+                if stop is not None and stop.is_set():
+                    break
                 self.repository.update_metadata(
                     item.id, metadata, to_iso(now), to_iso(now + timedelta(seconds=POLL_SECONDS))
                 )
@@ -83,7 +87,7 @@ class Scheduler:
     def run(self, stop: Event) -> None:
         while not stop.is_set():
             try:
-                self.tick()
+                self.tick(stop=stop)
             except Exception:
                 LOGGER.exception("방송 감지 작업 오류")
             stop.wait(1)

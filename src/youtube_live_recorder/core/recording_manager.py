@@ -37,11 +37,14 @@ class RecordingManager:
         self.stop_event = Event()
         self.future: Future | None = None
         self.lock = Lock()
+        self.accepting = True
 
     def start(
         self, broadcast_id: str, mode: RecordingMode = RecordingMode.LIVE
     ) -> RecordingSession:
         with self.lock:
+            if not self.accepting:
+                raise AppError(ErrorCode.INVALID_STATE)
             check_storage(self.settings.save_folder, self.settings.min_free_bytes, create=True)
             session = self.repository.claim_session(broadcast_id, mode)
             self.stop_event = Event()
@@ -58,8 +61,13 @@ class RecordingManager:
         self.stop_event.set()
 
     def shutdown(self) -> None:
-        self.stop()
+        self.stop_accepting()
         self.pool.shutdown(wait=True)
+
+    def stop_accepting(self) -> None:
+        with self.lock:
+            self.accepting = False
+            self.stop_event.set()
 
     def _record(self, session: RecordingSession, stop: Event) -> None:
         item = self.repository.get_broadcast(session.broadcast_id)
@@ -76,9 +84,16 @@ class RecordingManager:
         )
         segment = self.repository.add_segment(session.id, 0, str(work))
         inspection = None
+
+        def quality(height: int) -> None:
+            self.repository.record_actual_quality(session.id, height)
+
         try:
             result = self.backend.capture(
-                CaptureRequest(item.original_url, item.preferred_quality, work, from_start), stop
+                CaptureRequest(
+                    item.original_url, item.preferred_quality, work, from_start, quality
+                ),
+                stop,
             )
             edge_fallback = False
             if (
@@ -91,7 +106,9 @@ class RecordingManager:
                 edge_work = work / "live-edge"
                 segment = self.repository.add_segment(session.id, 1, str(edge_work))
                 result = self.backend.capture(
-                    CaptureRequest(item.original_url, item.preferred_quality, edge_work, False),
+                    CaptureRequest(
+                        item.original_url, item.preferred_quality, edge_work, False, quality
+                    ),
                     stop,
                 )
                 edge_fallback = True

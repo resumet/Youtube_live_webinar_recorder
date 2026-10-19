@@ -166,6 +166,9 @@ class YtdlpAdapter:
             "res,vcodec:h264,acodec:aac",
             "--merge-output-format",
             "mkv",
+            "--no-simulate",
+            "--print",
+            "before_dl:YLR_FORMAT %(height)j",
             "--hls-use-mpegts",
             "--fixup",
             "never",
@@ -181,6 +184,13 @@ class YtdlpAdapter:
         video_id = parse_video_url(request.url).video_id
 
         def line(name: str, value: str) -> None:
+            if name == "stdout" and value.startswith("YLR_FORMAT ") and request.on_quality:
+                try:
+                    height = json.loads(value.removeprefix("YLR_FORMAT ").strip())
+                    if isinstance(height, int) and height > 0:
+                        request.on_quality(height)
+                except (ValueError, TypeError):
+                    pass
             # 진행 출력도 무한히 파일에 누적하지 않는다. stderr 오류만 분리하여 보관한다.
             if name == "stderr" and value.strip():
                 LOGGER.info(
