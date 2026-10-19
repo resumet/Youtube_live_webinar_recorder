@@ -18,9 +18,13 @@ class ErrorCode(StrEnum):
     VERIFY_FAILED = "VERIFY_FAILED"
     RATE_LIMITED = "RATE_LIMITED"
     REPLAY_EXPIRED = "REPLAY_EXPIRED"
+    DVR_UNAVAILABLE = "DVR_UNAVAILABLE"
+    FORMAT_UNAVAILABLE = "FORMAT_UNAVAILABLE"
 
 
 MESSAGES = {
+    ErrorCode.DVR_UNAVAILABLE: "방송 시작 구간을 가져올 수 없어 현재 시점부터 저장을 시도합니다.",
+    ErrorCode.FORMAT_UNAVAILABLE: "요청한 조건으로 저장 가능한 영상·음성 형식이 없습니다.",
     ErrorCode.INVALID_URL: "유효한 YouTube 영상 URL을 입력해 주세요.",
     ErrorCode.DUPLICATE_BROADCAST: "이미 대기 또는 진행 중인 방송입니다.",
     ErrorCode.INVALID_STATE: "현재 상태에서는 이 작업을 수행할 수 없습니다.",

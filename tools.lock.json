@@ -1,0 +1,16 @@
+{
+  "ffmpeg": {
+    "version": "n9.0.2-28-g669f5ab083",
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-18-13-01/ffmpeg-n9.0.2-28-g669f5ab083-win64-lgpl-shared-9.0.zip",
+    "sha256": "bc5a0e82b643605ae067f10aacdb4fcd27747779deefa52275d600695b2b1d48",
+    "directory": "ffmpeg",
+    "license": "LGPL-2.1-or-later; actual build configuration and bundled notices must be included"
+  },
+  "deno": {
+    "version": "2.9.7",
+    "url": "https://github.com/denoland/deno/releases/download/v2.9.7/deno-x86_64-pc-windows-msvc.zip",
+    "sha256": "a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238",
+    "directory": "deno",
+    "license": "MIT; includes third-party dependencies"
+  }
+}

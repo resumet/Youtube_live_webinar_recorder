@@ -101,6 +101,8 @@ class Broadcast:
     poll_failures: int
     permission_confirmed: bool
     updated_at: str
+    first_detected_at: str | None = None
+    live_state: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -120,3 +122,6 @@ class RecordingSession:
     failure_reason: str | None
     created_at: str
     updated_at: str
+    work_directory: str | None = None
+    coverage_note: str = ""
+    from_start_attempted: bool = False

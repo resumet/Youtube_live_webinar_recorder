@@ -93,6 +93,13 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
             details_json TEXT NOT NULL DEFAULT '{}'
         )""",
     ),
+    2: (
+        "ALTER TABLE broadcasts ADD COLUMN first_detected_at TEXT",
+        "ALTER TABLE broadcasts ADD COLUMN live_state TEXT NOT NULL DEFAULT 'unknown'",
+        "ALTER TABLE recording_sessions ADD COLUMN work_directory TEXT",
+        "ALTER TABLE recording_sessions ADD COLUMN coverage_note TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE recording_sessions ADD COLUMN from_start_attempted INTEGER NOT NULL DEFAULT 0",
+    ),
 }
 
 SCHEMA_VERSION = max(MIGRATIONS)

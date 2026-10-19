@@ -33,7 +33,7 @@ class KoreanParser(argparse.ArgumentParser):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = KoreanParser(description="YouTube Live Recorder · 초기화 및 엔진 진단 도구")
+    parser = KoreanParser(description="YouTube Live Recorder · 녹화 엔진 및 진단 도구")
     parser._positionals.title = "명령"
     parser._optionals.title = "옵션"
     parser.add_argument("--version", action="version", version=f"프로그램 버전 {__version__}")
@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", title="사용 가능한 명령")
     commands.add_parser("init", help="DB와 기본 설정 초기화")
     commands.add_parser("diagnose", help="DB 및 외부 도구 설치 상태 확인")
-    add = commands.add_parser("add", help="방송 대기 등록 (1단계에서는 자동 감지 미실행)")
+    add = commands.add_parser("add", help="방송 대기 등록 (감지는 watch 명령으로 시작)")
     add.add_argument("url", help="YouTube 방송 URL")
     add.add_argument(
         "--quality", choices=[q.value for q in Quality], default="1080p", help="희망 화질"
@@ -51,10 +51,22 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("list", help="저장된 대기 목록 확인")
     cancel = commands.add_parser("cancel", help="대기 방송 취소")
     cancel.add_argument("id", help="등록 UUID (list 명령으로 확인)")
+    inspect = commands.add_parser("inspect", help="실제 방송 정보와 라이브 상태 조회")
+    inspect.add_argument("url", help="YouTube 방송 URL")
+    commands.add_parser("watch", help="대기 방송 자동 감지·녹화 시작 (Ctrl+C로 안전 중지)")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments and arguments[0] == "--worker":
+        from youtube_live_recorder.services.worker import main as worker_main
+
+        return worker_main()
+    if arguments and arguments[0] == "--signal-console":
+        from youtube_live_recorder.services.windows_job import signal_console
+
+        return signal_console(int(arguments[1]))
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
@@ -68,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "init":
             print(f"초기화 완료 · 데이터베이스: {context.paths.database}")
             print(f"로그 폴더: {context.paths.logs}")
-            print("현재는 1단계입니다. 자동 녹화 엔진과 GUI는 아직 실행되지 않습니다.")
+            print("대기 방송 자동 감지는 watch 명령으로 시작합니다.")
         elif args.command == "diagnose":
             packages = {}
             for package in ("PySide6", "yt-dlp", "tzdata"):
@@ -80,6 +92,14 @@ def main(argv: list[str] | None = None) -> int:
                 name: shutil.which(name) or "설치되지 않음"
                 for name in ("ffmpeg", "ffprobe", "deno", "node")
             }
+            try:
+                from youtube_live_recorder.services.toolchain import Toolchain
+
+                chain = Toolchain.discover()
+                tools.update(ffmpeg=str(chain.ffmpeg), ffprobe=str(chain.ffprobe))
+                tools[chain.javascript_kind] = str(chain.javascript)
+            except AppError:
+                pass
             print(
                 json.dumps(
                     {
@@ -103,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                 custom_filename=args.filename,
             )
             print(f"대기 목록에 저장했습니다: {broadcast.id}")
-            print("자동 감지는 아직 구현되지 않았습니다. 현재는 목록 저장만 수행합니다.")
+            print("watch 명령을 실행하면 방송 정보를 조회하고 자동 감지를 시작합니다.")
         elif args.command == "list":
             broadcasts = context.repository.list_broadcasts()
             if not broadcasts:
@@ -113,6 +133,44 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "cancel":
             context.repository.transition(args.id, BroadcastStatus.CANCELLED)
             print("방송 대기를 취소했습니다.")
+        elif args.command == "inspect":
+            from youtube_live_recorder.services.toolchain import Toolchain
+            from youtube_live_recorder.services.ytdlp_adapter import YtdlpAdapter
+
+            metadata = YtdlpAdapter(Toolchain.discover()).fetch(args.url)
+            labels = {
+                "is_live": "라이브 진행 중",
+                "is_upcoming": "방송 예정",
+                "post_live": "방송 종료 · 다시보기 처리 중",
+                "was_live": "다시보기",
+                "not_live": "라이브 방송 아님",
+                "unknown": "상태 확인 불가",
+            }
+            print(
+                json.dumps(
+                    {
+                        "영상 ID": metadata.video_id,
+                        "제목": metadata.title,
+                        "채널": metadata.channel_name,
+                        "썸네일": metadata.thumbnail_url,
+                        "상태": labels[metadata.state],
+                        "예정 시각(UTC)": metadata.scheduled_start_at,
+                        "시작 시각(UTC)": metadata.actual_start_at,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        elif args.command == "watch":
+            from youtube_live_recorder.core.engine import Engine
+
+            engine = Engine(context)
+            print("방송 감지를 시작합니다. Ctrl+C를 누르면 진행 파일을 정리하고 종료합니다.")
+            try:
+                engine.run()
+            except KeyboardInterrupt:
+                engine.stop()
+                print("녹화 작업을 안전하게 종료했습니다.")
     except AppError as exc:
         print(str(exc), file=sys.stderr)
         return 2

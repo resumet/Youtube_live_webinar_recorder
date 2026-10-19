@@ -3,7 +3,10 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
-from youtube_live_recorder.core.state_machine import validate_broadcast_transition
+from youtube_live_recorder.core.state_machine import (
+    validate_broadcast_transition,
+    validate_session_transition,
+)
 from youtube_live_recorder.data.db import Database
 from youtube_live_recorder.data.models import (
     Broadcast,
@@ -13,6 +16,7 @@ from youtube_live_recorder.data.models import (
     RecordingSession,
     SessionStatus,
 )
+from youtube_live_recorder.services.interfaces import BroadcastMetadata, MediaInspection
 from youtube_live_recorder.utils.errors import AppError, ErrorCode
 from youtube_live_recorder.utils.logging import redact
 from youtube_live_recorder.utils.time import to_iso, utc_now
@@ -36,6 +40,7 @@ def _session(row: sqlite3.Row) -> RecordingSession:
     values["mode"] = RecordingMode(values["mode"])
     values["selected_quality"] = Quality(values["selected_quality"])
     values["ffprobe_ok"] = bool(values["ffprobe_ok"])
+    values["from_start_attempted"] = bool(values["from_start_attempted"])
     return RecordingSession(**values)
 
 
@@ -233,3 +238,162 @@ class Repository:
                     redact(message),
                 ),
             )
+
+    def update_metadata(
+        self, identifier: str, metadata: BroadcastMetadata, checked_at: str, next_check_at: str
+    ) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                """UPDATE broadcasts SET title=?,channel_name=?,thumbnail_url=?,
+                scheduled_start_at=COALESCE(?,scheduled_start_at),
+                actual_start_at=COALESCE(?,actual_start_at),live_state=?,
+                first_detected_at=CASE WHEN ?='is_live' THEN COALESCE(first_detected_at,?)
+                ELSE first_detected_at END,last_polled_at=?,next_check_at=?,poll_failures=0,
+                last_error_code=NULL,updated_at=? WHERE id=? AND video_id=?
+                AND status NOT IN ('COMPLETED','CANCELLED','REPLAY_EXPIRED')""",
+                (
+                    metadata.title,
+                    metadata.channel_name,
+                    metadata.thumbnail_url,
+                    metadata.scheduled_start_at,
+                    metadata.actual_start_at,
+                    metadata.state,
+                    metadata.state,
+                    checked_at,
+                    checked_at,
+                    next_check_at,
+                    checked_at,
+                    identifier,
+                    metadata.video_id,
+                ),
+            )
+
+    def poll_failed(
+        self,
+        identifier: str,
+        code: ErrorCode,
+        checked_at: str,
+        next_check_at: str,
+        *,
+        permanent: bool = False,
+    ) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                """UPDATE broadcasts SET last_polled_at=?,next_check_at=?,last_error_code=?,
+                poll_failures=poll_failures+1,updated_at=?,status=? WHERE id=?
+                AND status IN ('WAITING','ERROR_RETRYABLE','LIVE_DETECTED')""",
+                (
+                    checked_at,
+                    next_check_at,
+                    code,
+                    checked_at,
+                    (
+                        BroadcastStatus.WAITING
+                        if code == ErrorCode.STREAM_NOT_LIVE
+                        else BroadcastStatus.ERROR
+                        if permanent
+                        else BroadcastStatus.ERROR_RETRYABLE
+                    ),
+                    identifier,
+                ),
+            )
+
+    def set_session_state(
+        self,
+        identifier: str,
+        target: SessionStatus,
+        *,
+        work_directory: str | None = None,
+        from_start: bool | None = None,
+        note: str | None = None,
+    ) -> None:
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                "SELECT status FROM recording_sessions WHERE id=?", (identifier,)
+            ).fetchone()
+            if row is None:
+                raise KeyError("녹화 작업을 찾을 수 없습니다.")
+            validate_session_transition(SessionStatus(row[0]), target)
+            connection.execute(
+                """UPDATE recording_sessions SET status=?,work_directory=COALESCE(?,work_directory),
+                from_start_attempted=COALESCE(?,from_start_attempted),
+                coverage_note=COALESCE(?,coverage_note),updated_at=? WHERE id=?""",
+                (target, work_directory, from_start, note, to_iso(utc_now()), identifier),
+            )
+
+    def finish_session(
+        self,
+        identifier: str,
+        target: SessionStatus,
+        broadcast_target: BroadcastStatus,
+        inspection: MediaInspection | None = None,
+        reason: str = "",
+    ) -> None:
+        """파일 검사 결과와 방송 상태를 한 트랜잭션으로 기록하고 슬롯을 해제한다."""
+        now = to_iso(utc_now())
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM recording_sessions WHERE id=?", (identifier,)
+            ).fetchone()
+            if row is None:
+                raise KeyError("녹화 작업을 찾을 수 없습니다.")
+            validate_session_transition(SessionStatus(row["status"]), target)
+            if target == SessionStatus.COMPLETE and (inspection is None or not inspection.valid):
+                raise AppError(ErrorCode.VERIFY_FAILED)
+            broadcast = connection.execute(
+                "SELECT status FROM broadcasts WHERE id=?", (row["broadcast_id"],)
+            ).fetchone()
+            validate_broadcast_transition(BroadcastStatus(broadcast[0]), broadcast_target)
+            connection.execute(
+                """UPDATE recording_sessions SET status=?,ended_at=?,output_path=?,
+                duration_seconds=?,size_bytes=?,ffprobe_ok=?,actual_quality=?,
+                failure_reason=?,updated_at=? WHERE id=?""",
+                (
+                    target,
+                    now,
+                    str(inspection.path) if inspection else None,
+                    inspection.duration_seconds if inspection else None,
+                    inspection.size_bytes if inspection else 0,
+                    bool(inspection and inspection.valid),
+                    f"{inspection.height}p" if inspection and inspection.height else None,
+                    reason or None,
+                    now,
+                    identifier,
+                ),
+            )
+            connection.execute(
+                "UPDATE broadcasts SET status=?,updated_at=? WHERE id=?",
+                (broadcast_target, now, row["broadcast_id"]),
+            )
+
+    def add_segment(self, session_id: str, index: int, temporary: str) -> str:
+        identifier = str(uuid4())
+        with self.database.transaction() as connection:
+            connection.execute(
+                """INSERT INTO recording_segments
+                (id,session_id,segment_index,temporary_path,started_at,status)
+                VALUES (?,?,?,?,?,'WRITING')""",
+                (identifier, session_id, index, temporary, to_iso(utc_now())),
+            )
+        return identifier
+
+    def finish_segment(self, identifier: str, inspection: MediaInspection | None) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                """UPDATE recording_segments SET final_path=?,ended_at=?,status=?,bytes_written=?
+                WHERE id=?""",
+                (
+                    str(inspection.path) if inspection else None,
+                    to_iso(utc_now()),
+                    "COMPLETE" if inspection and inspection.valid else "PARTIAL",
+                    inspection.size_bytes if inspection else 0,
+                    identifier,
+                ),
+            )
+
+    def list_sessions(self) -> list[RecordingSession]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM recording_sessions ORDER BY started_at DESC"
+            ).fetchall()
+        return [_session(row) for row in rows]

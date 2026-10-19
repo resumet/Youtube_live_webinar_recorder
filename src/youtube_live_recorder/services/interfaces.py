@@ -5,10 +5,11 @@ from threading import Event
 from typing import Protocol
 
 from youtube_live_recorder.data.models import Quality
+from youtube_live_recorder.utils.errors import ErrorCode
 
 
 class LiveState(StrEnum):
-    UPCOMING = "upcoming"
+    UPCOMING = "is_upcoming"
     LIVE = "is_live"
     POST_LIVE = "post_live"
     WAS_LIVE = "was_live"
@@ -61,6 +62,8 @@ class CaptureResult:
     files: tuple[Path, ...]
     stopped_by_user: bool
     from_start_attempted: bool
+    error_code: ErrorCode | None = None
+    forced: bool = False
 
 
 class CaptureBackend(Protocol):

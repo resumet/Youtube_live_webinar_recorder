@@ -34,3 +34,33 @@
 근거: [yt-dlp 공식 README](https://github.com/yt-dlp/yt-dlp),
 [EJS 공식 설치 안내](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
 `--live-from-start`는 실험적이며 성공/전체 구간 보장으로 표시하면 안 된다.
+
+## 2026-10-19 · 녹화 엔진
+
+- **실제 도구 버전**: FFmpeg `n9.0.2-28-g669f5ab083` LGPL shared, Deno `2.9.7`.
+  배포 ZIP의 SHA256과 변경되지 않는 릴리스 주소를 `tools.lock.json`에 고정했다.
+- **중지 신호**: `CREATE_NO_WINDOW`만 사용하면 콘솔 신호를 전달할 수 없다.
+  워커를 `CREATE_NEW_CONSOLE` + `SW_HIDE`로 시작하며 `SetConsoleCtrlHandler(NULL,FALSE)`로
+  상속된 Ctrl+C 무시 상태를 해제한다. 별도 신호 helper가 해당 콘솔에만 attach하고
+  Ctrl+C를 보내며 짧게 기다린 뒤 detach한다. 실제 Python/FFmpeg 중지 테스트로 검증했다.
+- **프로세스 수명**: 워커는 stdin의 시작 메시지 전에 어떤 도구도 실행하지 않는다.
+  부모가 KILL_ON_JOB_CLOSE Job Object를 할당한 뒤 시작 메시지를 보내므로, 앱 크래시 후
+  녹화 자식만 남는 경쟁 조건을 방지한다. 종료 신호 무시 시 유예 시간 뒤 job 전체를 종료한다.
+- **다운로드 격리**: 시스템/사용자 yt-dlp 설정, 외부 플러그인, 원격 EJS 다운로드를
+  비활성화한다. EJS와 JavaScript 런타임은 고정 설치본을 사용한다. 로그인·쿠키·DRM 옵션 없음.
+- **최종 MP4**: 캡처 파일·분리 영상/음성을 보존하며 복사 remux로 MP4를 만든다.
+  코덱 조합이 MP4에 적합하지 않아 remux가 실패하면 성공으로 표시하지 않고 원본을 유지한다.
+  자동 전체 재인코딩은 현재 제공하지 않는다.
+- **파일 공개 시점**: 이름은 별도 `.reserve` 파일로 예약하고 `.finalizing.mp4` 검사 후
+  Windows의 덮어쓰지 않는 rename으로 최종 이름을 공개한다. 기존 파일은 덮어쓰지 않는다.
+- **완료 의미**: 두 번의 명시적 방송 종료 응답 + 다운로드 정상 종료 + MP4 기본 검사 통과.
+  DVR 전체 구간 보장은 별개이다. 수동 중지는 유효 파일이어도 PARTIAL로 기록하고 방송은
+  CANCELLED로 처리해 자동 재시작하지 않는다. 현재 앱 완전 종료에도 같은 정책을 적용한다.
+- **경쟁 취소**: 조회 응답이 돌아오기 전에 사용자가 취소한 항목은 상태를 다시 읽고
+  건너뛴다. 조회 실패 기록도 종료·취소된 방송을 재활성화할 수 없도록 조건부 갱신한다.
+- **단계 경계**: `watch`는 미완료 활성 세션이 있으면 명시적으로 중단한다.
+  파일 복구 없이 슬롯을 비우고 중복 녹화를 시작하는 동작은 하지 않는다. 자동 복구는 4단계에 연결한다.
+
+공식 근거: [FFmpeg 배포 안내](https://ffmpeg.org/download.html),
+[Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects),
+[GenerateConsoleCtrlEvent](https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent).
