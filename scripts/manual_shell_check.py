@@ -16,7 +16,7 @@ def run(reports: Path, *, smoke: bool = False) -> Path:
     else:
         os.environ["QT_QPA_PLATFORM"] = "windows"
     from PySide6.QtCore import QEvent, QObject, QTimer
-    from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+    from PySide6.QtWidgets import QApplication, QPushButton, QSystemTrayIcon, QToolBar
 
     from youtube_live_recorder.bootstrap import bootstrap
     from youtube_live_recorder.data.db import Database
@@ -54,13 +54,34 @@ def run(reports: Path, *, smoke: bool = False) -> Path:
         "창 숨김 관찰": False,
         "트레이 클릭 후 복원": False,
         "완료 알림 클릭": False,
+        "알림 클릭 횟수": 0,
+        "마지막 클릭 대상": None,
+        "폴더 열기 요청": [],
         "탐색기 실제 표시": "사용자 육안 확인 필요",
+        "검사 진행 중": True,
     }
+    path = root / "result.json"
+
+    def save():
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+
+    original_open_folder = window.open_folder
+
+    def open_folder(folder):
+        report["폴더 열기 요청"].append(str(folder))
+        save()
+        original_open_folder(folder)
+
+    window.open_folder = open_folder
+    save()
 
     class Observer(QObject):
         def eventFilter(self, watched, event):
             if watched is window and event.type() == QEvent.Type.Hide and not window.quitting:
                 report["창 숨김 관찰"] = True
+                save()
             return False
 
     observer = Observer(window)
@@ -72,10 +93,14 @@ def run(reports: Path, *, smoke: bool = False) -> Path:
             QSystemTrayIcon.ActivationReason.DoubleClick,
         }:
             report["트레이 클릭 후 복원"] = bool(report["창 숨김 관찰"] and window.isVisible())
+            save()
 
     def clicked():
+        report["알림 클릭 횟수"] += 1
+        report["마지막 클릭 대상"] = str(window.last_notification_folder)
         if window.last_notification_folder == output.parent:
             report["완료 알림 클릭"] = True
+        save()
 
     window.tray.activated.connect(activated)
     window.tray.messageClicked.connect(clicked)
@@ -102,33 +127,52 @@ def run(reports: Path, *, smoke: bool = False) -> Path:
                 output.parent,
             )
         )
+        complete_button.setEnabled(True)
 
     def show_completed():
+        # 재표시도 제품의 알림 추적 경로를 거치도록 모의 이전 상태를 갱신한다.
+        window.tracker.seen[completed.id] = SessionStatus.RUNNING
         session = replace(completed, started_at=started, ended_at=to_iso(utc_now()))
         window.on_snapshot(Snapshot((broadcast,), (session,), None, 0, None, output.parent))
+        report["완료 알림 요청 시각"] = to_iso(utc_now())
+        save()
 
-    def end_check():
+    def end_check(reason="시간 제한 자동 종료"):
         if not window.quitting:
+            report["종료 방식"] = reason
             window.quitting = True
             window.timer.stop()
             controller.close_async()
 
+    toolbar = QToolBar("수동 확인 도구", window)
+    toolbar.setMovable(False)
+    complete_button = QPushButton("완료 알림 표시", toolbar)
+    complete_button.setEnabled(False)
+    complete_button.clicked.connect(show_completed)
+    toolbar.addWidget(complete_button)
+    exit_button = QPushButton("결과 저장 후 종료", toolbar)
+    exit_button.clicked.connect(lambda: end_check("사용자 검증 종료 버튼"))
+    toolbar.addWidget(exit_button)
+    window.addToolBar(toolbar)
     window.show()
     QTimer.singleShot(1000, show_started)
-    QTimer.singleShot(20000, show_completed)
+    if smoke:
+        QTimer.singleShot(20000, complete_button.click)
     QTimer.singleShot(25000 if smoke else 600000, end_check)
     print(
-        "창 X → 트레이 아이콘 클릭 → 20초 후 완료 알림 클릭 → 완전 종료 순서로 확인하세요.",
+        "창 X → 트레이 복원 → 상단 '완료 알림 표시' → 알림 클릭 → '결과 저장 후 종료'.",
         flush=True,
     )
+    print(f"진행 결과: {path}", flush=True)
     result = app.exec()
+    report["검사 진행 중"] = False
+    report.setdefault("종료 방식", "프로그램 완전 종료")
     report["정상 종료"] = result == 0
     report["모의 완료 화면 표시"] = bool(
         window.snapshot
         and any(session.status == SessionStatus.COMPLETE for session in window.snapshot.sessions)
     )
-    path = root / "result.json"
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    save()
     if not report["정상 종료"] or not report["모의 완료 화면 표시"]:
         raise RuntimeError(f"로컬 검사 화면의 실행/종료를 확인하지 못했습니다. 결과: {path}")
     return path
