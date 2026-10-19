@@ -3,7 +3,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QTimer, QUrl, Slot
+from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -45,7 +45,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("YouTube Live Recorder")
         self.setWindowIcon(status_icon())
         self.resize(1240, 860)
-        self.setMinimumSize(1020, 680)
+        self.setMinimumSize(720, 420)
+        self._watched_screen = None
+        self._screen_signal_connected = False
         self.setStyleSheet(STYLE)
         self.snapshot: Snapshot | None = None
         self.engine_running = False
@@ -69,7 +71,6 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(210)
         navigation = QVBoxLayout(sidebar)
         navigation.setContentsMargins(18, 30, 18, 24)
         navigation.setSpacing(10)
@@ -94,7 +95,12 @@ class MainWindow(QMainWindow):
         exit_button.setObjectName("nav")
         exit_button.clicked.connect(self.request_quit)
         navigation.addWidget(exit_button)
-        root.addWidget(sidebar)
+        self.sidebar_scroll = QScrollArea()
+        self.sidebar_scroll.setWidgetResizable(True)
+        self.sidebar_scroll.setFixedWidth(210)
+        self.sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.sidebar_scroll.setWidget(sidebar)
+        root.addWidget(self.sidebar_scroll)
 
         content = QWidget()
         content.setObjectName("content")
@@ -115,13 +121,10 @@ class MainWindow(QMainWindow):
         self.history = HistoryPage()
         self.settings = SettingsPage()
         for page in (self.dashboard, self.queue, self.history, self.settings):
-            if page in (self.dashboard, self.settings):
-                scroll = QScrollArea()
-                scroll.setWidgetResizable(True)
-                scroll.setWidget(page)
-                self.stack.addWidget(scroll)
-            else:
-                self.stack.addWidget(page)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(page)
+            self.stack.addWidget(scroll)
         content_layout.addWidget(self.stack, 1)
         root.addWidget(content, 1)
         self.select_page(0)
@@ -172,6 +175,40 @@ class MainWindow(QMainWindow):
             self.timer.start()
             if self.controller.context.settings.update_manifest_url:
                 QTimer.singleShot(10000, self.check_update)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._screen_signal_connected and self.windowHandle():
+            self.windowHandle().screenChanged.connect(self._watch_screen)
+            self._screen_signal_connected = True
+        self._watch_screen(self.screen())
+
+    def _watch_screen(self, screen):
+        if screen is not self._watched_screen:
+            if self._watched_screen:
+                self._watched_screen.availableGeometryChanged.disconnect(self._schedule_screen_fit)
+            self._watched_screen = screen
+            if screen:
+                screen.availableGeometryChanged.connect(self._schedule_screen_fit)
+        self._schedule_screen_fit()
+
+    def _schedule_screen_fit(self, *_):
+        QTimer.singleShot(0, self._fit_to_screen)
+
+    def _fit_to_screen(self):
+        if not self.isVisible() or self.isMaximized() or self.isMinimized() or not self.screen():
+            return
+        available = self.screen().availableGeometry()
+        frame = self.frameGeometry()
+        width = max(1, available.width() - (frame.width() - self.width()) - 24)
+        height = max(1, available.height() - (frame.height() - self.height()) - 24)
+        self.setMinimumSize(min(720, width), min(420, height))
+        self.resize(min(self.width(), width), min(self.height(), height))
+        frame = self.frameGeometry()
+        self.move(
+            max(available.left() + 12, min(frame.left(), available.right() - frame.width() - 11)),
+            max(available.top() + 12, min(frame.top(), available.bottom() - frame.height() - 11)),
+        )
 
     def select_page(self, index: int):
         self.stack.setCurrentIndex(index)

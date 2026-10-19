@@ -1,11 +1,12 @@
 import threading
 from dataclasses import replace
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QSystemTrayIcon
+from PySide6.QtWidgets import QPushButton, QSystemTrayIcon
 
 from youtube_live_recorder.bootstrap import bootstrap
 from youtube_live_recorder.data.models import BroadcastStatus as B
@@ -50,6 +51,36 @@ def test_window_navigation_and_required_permission(desktop, qtbot):
     qtbot.mouseClick(window.dashboard.add_button, Qt.MouseButton.LeftButton)
     assert "권한" in window.banner.text()
     assert not context.repository.list_broadcasts()
+
+
+@pytest.mark.parametrize("available", [QRect(0, 0, 960, 516), QRect(1920, 0, 1280, 688)])
+def test_small_screen_keeps_window_and_scrolled_controls_reachable(
+    desktop, qtbot, monkeypatch, available
+):
+    window, _, _ = desktop
+    monkeypatch.setattr(
+        window, "screen", lambda: SimpleNamespace(availableGeometry=lambda: available)
+    )
+    window.resize(1240, 860)
+    window._fit_to_screen()
+    qtbot.waitUntil(lambda: available.contains(window.frameGeometry()))
+    for index, navigation in enumerate(window.nav_buttons):
+        window.sidebar_scroll.ensureWidgetVisible(navigation, 0, 0)
+        qtbot.mouseClick(navigation, Qt.MouseButton.LeftButton)
+        assert window.stack.currentIndex() == index
+        scroll = window.stack.currentWidget()
+        for button in scroll.widget().findChildren(QPushButton):
+            scroll.ensureWidgetVisible(button, 0, 0)
+            rect = QRect(button.mapTo(scroll.viewport(), QPoint()), button.size())
+            assert scroll.viewport().rect().contains(rect), button.text()
+    exit_button = next(
+        button
+        for button in window.sidebar_scroll.widget().findChildren(QPushButton)
+        if button.text() == "완전 종료"
+    )
+    window.sidebar_scroll.ensureWidgetVisible(exit_button, 0, 0)
+    rect = QRect(exit_button.mapTo(window.sidebar_scroll.viewport(), QPoint()), exit_button.size())
+    assert window.sidebar_scroll.viewport().rect().contains(rect)
 
 
 def test_register_and_duplicate_error_keep_ui_responsive(desktop, qtbot):

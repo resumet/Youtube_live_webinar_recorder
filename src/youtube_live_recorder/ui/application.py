@@ -34,11 +34,26 @@ def run_gui(context: ApplicationContext, *, smoke_report: Path | None = None) ->
             smoke_report.parent.mkdir(parents=True, exist_ok=True)
             screenshot = smoke_report.with_suffix(".png")
             rendered = window.grab().save(str(screenshot))
+            screen = window.screen()
+            pages = []
+            for index, name in enumerate(("dashboard", "queue", "history", "settings")):
+                window.select_page(index)
+                app.processEvents()
+                page_image = smoke_report.with_name(f"{smoke_report.stem}-{name}.png")
+                rendered = window.grab().save(str(page_image)) and rendered
+                pages.append({"이름": name, "화면": str(page_image)})
             report = {
                 "성공": bool(rendered and len(heartbeats) >= 5 and window.engine_running),
                 "UI 타이머 횟수": len(heartbeats),
                 "엔진 실행": window.engine_running,
                 "화면": str(screenshot),
+                "페이지": pages,
+                "장치 배율": window.devicePixelRatioF(),
+                "가용 화면": list(screen.availableGeometry().getRect()) if screen else None,
+                "창 테두리": list(window.frameGeometry().getRect()),
+                "화면 안에 창 표시": bool(
+                    screen and screen.availableGeometry().contains(window.frameGeometry())
+                ),
             }
             smoke_report.write_text(
                 json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"

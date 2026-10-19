@@ -45,6 +45,18 @@ GUI 실행 파일 하나만 복사하면 동작하지 않는다. 폴더 전체�
 Qt offscreen 검사와 실제 Windows 트레이/알림 센터 클릭 검증은 별개이다.
 `--qt-platform windows`는 실제 qwindows 플러그인에서도 같은 검사를 수행한다.
 
+화면 크기와 배율 회귀는 다음 명령으로 확인한다.
+
+```powershell
+.\.venv\Scripts\python.exe scripts/verify_display.py
+```
+
+이 검사는 실제 번들을 각각 새 데이터 폴더에서 실행하고 Qt 배율 1/1.25/1.5/2를 적용한다.
+네 페이지를 렌더링하고, 작업 표시줄을 제외한 가용 화면 안에 창이 들어오는지 확인한다.
+Windows의 전역 화면 설정은 변경하지 않는다. `QT_SCALE_FACTOR`는 실제 장치 배율에 곱해지므로
+결과에는 요청값과 관찰된 장치 배율을 함께 기록한다. 물리적인 다중 모니터 이동·핫플러그 시험과는 다르다.
+근거: [Qt High DPI 테스트](https://doc.qt.io/qt-6/highdpi.html#testing).
+
 ## 장시간 검증
 
 빈 개발 전용 데이터 폴더를 지정해야 한다. 다음은 실제 3시간이 걸리며 YouTube에는 접속하지 않는다.
