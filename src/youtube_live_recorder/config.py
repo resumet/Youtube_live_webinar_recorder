@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from youtube_live_recorder.data.repository import Repository
+from youtube_live_recorder.limits import DEFAULT_CONCURRENT_RECORDINGS, validate_recording_limit
 from youtube_live_recorder.utils.paths import default_save_folder
 
 POLL_SECONDS = 60
@@ -17,6 +18,10 @@ class Settings:
     max_reconnect_attempts: int = 6
     metadata_timeout_seconds: int = 45
     update_manifest_url: str = ""
+    max_concurrent_recordings: int = DEFAULT_CONCURRENT_RECORDINGS
+
+    def __post_init__(self):
+        validate_recording_limit(self.max_concurrent_recordings)
 
     @classmethod
     def load(cls, repository: Repository) -> "Settings":
@@ -29,4 +34,12 @@ class Settings:
         )
         if not isinstance(manifest, str) or (manifest and not manifest.startswith("https://")):
             manifest = ""
-        return cls(save_folder=Path(saved), update_manifest_url=manifest)
+        limit = repository.get_setting("max_concurrent_recordings")
+        try:
+            validate_recording_limit(limit)
+        except ValueError:
+            limit = DEFAULT_CONCURRENT_RECORDINGS
+            repository.set_setting("max_concurrent_recordings", limit)
+        return cls(
+            save_folder=Path(saved), update_manifest_url=manifest, max_concurrent_recordings=limit
+        )

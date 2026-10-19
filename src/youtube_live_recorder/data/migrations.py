@@ -106,6 +106,11 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE recording_segments ADD COLUMN height INTEGER",
         "ALTER TABLE recording_segments ADD COLUMN failure_reason TEXT",
     ),
+    4: (
+        "DROP INDEX single_active_session",
+        """CREATE UNIQUE INDEX active_session_per_broadcast ON recording_sessions(broadcast_id)
+           WHERE status IN ('CREATED','RUNNING','RECONNECTING','FINALIZING','VERIFYING')""",
+    ),
 }
 
 SCHEMA_VERSION = max(MIGRATIONS)

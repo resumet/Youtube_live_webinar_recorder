@@ -1,7 +1,7 @@
 import logging
 import random
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Event, Lock, Thread
 
@@ -11,6 +11,7 @@ from youtube_live_recorder.data.models import RecordingMode, RecordingSession
 from youtube_live_recorder.data.models import SessionStatus as S
 from youtube_live_recorder.data.replays import ReplayStore
 from youtube_live_recorder.data.repository import Repository
+from youtube_live_recorder.limits import MAX_CONCURRENT_RECORDINGS
 from youtube_live_recorder.services.ffmpeg_adapter import FFmpegAdapter
 from youtube_live_recorder.services.interfaces import (
     CaptureBackend,
@@ -25,6 +26,20 @@ from youtube_live_recorder.utils.time import from_iso, utc_now
 
 LOGGER = logging.getLogger(__name__)
 RETRYABLE = {ErrorCode.NETWORK_DISCONNECTED, ErrorCode.RATE_LIMITED}
+
+
+@dataclass
+class RecordingTask:
+    session: RecordingSession
+    settings: Settings
+    stop: Event = field(default_factory=Event)
+    reason: str = ""
+    future: Future | None = None
+
+    def request_stop(self, reason: str):
+        if not self.stop.is_set():
+            self.reason = reason
+            self.stop.set()
 
 
 class RecordingManager:
@@ -45,9 +60,11 @@ class RecordingManager:
         self.repository, self.settings, self.metadata = repository, settings, metadata
         self.backend, self.finalizer = backend, finalizer
         self.replays = ReplayStore(repository)
-        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recorder")
-        self.stop_event = Event()
-        self.stop_reason = ""
+        self.pool = ThreadPoolExecutor(
+            max_workers=MAX_CONCURRENT_RECORDINGS, thread_name_prefix="recorder"
+        )
+        self.tasks: dict[str, RecordingTask] = {}
+        # 단일 작업을 실행하는 진단 도구의 마지막 작업 핸들.
         self.future: Future | None = None
         self.lock = Lock()
         self.accepting = True
@@ -62,11 +79,24 @@ class RecordingManager:
             if not self.accepting:
                 raise AppError(ErrorCode.INVALID_STATE)
             self.storage_check(self.settings.save_folder, self.settings.min_free_bytes, create=True)
-            session = self.repository.claim_session(broadcast_id, mode)
-            self.stop_event, self.stop_reason = Event(), ""
+            self.tasks = {
+                key: task
+                for key, task in self.tasks.items()
+                if task.future is None or not task.future.done()
+            }
+            session = self.repository.claim_session(
+                broadcast_id,
+                mode,
+                max_concurrent=self.settings.max_concurrent_recordings,
+                save_folder=self.settings.save_folder,
+            )
+            task = RecordingTask(session, self.settings)
+            self.tasks[session.id] = task
             try:
-                self.future = self.pool.submit(self._record, session, self.stop_event)
+                task.future = self.pool.submit(self._record, task)
+                self.future = task.future
             except RuntimeError:
+                self.tasks.pop(session.id, None)
                 self.repository.finish_session(
                     session.id, S.FAILED, B.ERROR, reason="녹화 작업을 시작할 수 없습니다."
                 )
@@ -75,22 +105,16 @@ class RecordingManager:
 
     def stop(self, reason: str = "user", *, expected_session_id: str | None = None) -> None:
         with self.lock:
-            if expected_session_id:
-                active = self.repository.active_session()
-                if active is None or active.id != expected_session_id:
-                    return
-            if not self.stop_event.is_set():
-                self.stop_reason = reason
-                self.stop_event.set()
+            for identifier, task in self.tasks.items():
+                if expected_session_id is None or identifier == expected_session_id:
+                    task.request_stop(reason)
 
     def preempt_replay(self) -> bool:
         with self.lock:
-            active = self.repository.active_session()
-            if active and active.mode == RecordingMode.REPLAY:
-                if not self.stop_event.is_set():
-                    self.stop_reason = "preempted"
-                    self.stop_event.set()
-                return True
+            for active in self.repository.active_sessions():
+                if active.mode == RecordingMode.REPLAY and active.id in self.tasks:
+                    self.tasks[active.id].request_stop("preempted")
+                    return True
             return False
 
     def shutdown(self) -> None:
@@ -100,9 +124,8 @@ class RecordingManager:
     def stop_accepting(self) -> None:
         with self.lock:
             self.accepting = False
-            if not self.stop_event.is_set():
-                self.stop_reason = "shutdown"
-                self.stop_event.set()
+            for task in self.tasks.values():
+                task.request_stop("shutdown")
 
     def freeze_if_idle(self) -> bool:
         """설치 준비와 새 슬롯 획득의 경쟁을 막는다. 실행 중 녹화는 중단하지 않는다."""
@@ -110,19 +133,15 @@ class RecordingManager:
             if self.repository.active_session() is not None:
                 return False
             self.accepting = False
-            self.stop_reason = "shutdown"
-            self.stop_event.set()
             return True
 
-    def _disk_watch(self, stop: Event, done: Event) -> None:
+    def _disk_watch(self, task: RecordingTask, done: Event) -> None:
         while not done.wait(self.disk_interval):
             try:
-                self.storage_check(self.settings.save_folder, self.settings.min_free_bytes)
+                self.storage_check(task.settings.save_folder, task.settings.min_free_bytes)
             except AppError as error:
                 with self.lock:
-                    if not stop.is_set():
-                        self.stop_reason = error.code
-                        stop.set()
+                    task.request_stop(error.code)
                 return
 
     def _ended(self, url: str, stop: Event) -> bool:
@@ -133,9 +152,10 @@ class RecordingManager:
                 return False
         return True
 
-    def _record(self, session: RecordingSession, stop: Event) -> None:
+    def _record(self, task: RecordingTask) -> None:
+        session, stop, settings = task.session, task.stop, task.settings
         item = self.repository.get_broadcast(session.broadcast_id)
-        work = self.settings.save_folder / ".ylr-work" / session.id
+        work = settings.save_folder / ".ylr-work" / session.id
         resumed = session.mode == RecordingMode.LIVE and any(
             old.id != session.id
             and old.broadcast_id == session.broadcast_id
@@ -144,7 +164,7 @@ class RecordingManager:
         )
         from_start = session.mode == RecordingMode.LIVE and not resumed
         done = Event()
-        monitor = Thread(target=self._disk_watch, args=(stop, done), name="disk-watch", daemon=True)
+        monitor = Thread(target=self._disk_watch, args=(task, done), name="disk-watch", daemon=True)
         saved = []
         reason, last_error = "", None
         ended, gap, failed_piece, user_stopped = False, resumed, False, False
@@ -227,7 +247,7 @@ class RecordingManager:
                     and not user_stopped
                     and not ended
                     and last_error in RETRYABLE
-                    and retry < self.settings.max_reconnect_attempts
+                    and retry < settings.max_reconnect_attempts
                 )
                 self.repository.set_session_state(
                     session.id, S.RECONNECTING if can_retry else S.FINALIZING
@@ -237,7 +257,7 @@ class RecordingManager:
                 try:
                     part_name = name if index == 0 else f"{Path(name).stem}_구간{index + 1:02d}.mp4"
                     inspection = self.finalizer.finalize(
-                        result.files, self.settings.save_folder, part_name
+                        result.files, settings.save_folder, part_name
                     )
                     saved.append(inspection)
                     last_valid = True
@@ -267,7 +287,7 @@ class RecordingManager:
                     self.repository.set_session_state(session.id, S.FINALIZING)
                     self.repository.transition(item.id, B.FINALIZING)
                     break
-                self.storage_check(self.settings.save_folder, self.settings.min_free_bytes)
+                self.storage_check(settings.save_folder, settings.min_free_bytes)
                 retry, index = retry + 1, index + 1
                 from_start = False
                 self.repository.set_session_state(session.id, S.RUNNING)
@@ -277,18 +297,18 @@ class RecordingManager:
                 )
             self.repository.set_session_state(session.id, S.VERIFYING)
             self.repository.transition(item.id, B.VERIFYING)
-            manual = (stop.is_set() or user_stopped) and self.stop_reason in {"", "user"}
+            manual = (stop.is_set() or user_stopped) and task.reason in {"", "user"}
             if manual:
                 target, reason = B.CANCELLED, "사용자가 중지한 부분 녹화입니다."
-            elif self.stop_reason in {ErrorCode.DISK_LOW, ErrorCode.WRITE_PERMISSION_DENIED}:
-                target, reason = B.ERROR, str(AppError(self.stop_reason))
-                last_error = self.stop_reason
-            elif self.stop_reason == "shutdown":
+            elif task.reason in {ErrorCode.DISK_LOW, ErrorCode.WRITE_PERMISSION_DENIED}:
+                target, reason = B.ERROR, str(AppError(task.reason))
+                last_error = task.reason
+            elif task.reason == "shutdown":
                 target, reason = (
                     B.ERROR_RETRYABLE,
                     "프로그램 종료로 중단했습니다. 다음 실행에서 상태를 재확인합니다.",
                 )
-            elif self.stop_reason == "preempted":
+            elif task.reason == "preempted":
                 target, reason = (
                     B.REPLAY_WAIT,
                     "라이브 녹화를 우선해 다시보기를 대기 상태로 돌렸습니다.",

@@ -11,6 +11,7 @@ class ErrorCode(StrEnum):
     STREAM_UNAVAILABLE = "STREAM_UNAVAILABLE"
     STREAM_ENDED = "STREAM_ENDED"
     BUSY_SINGLE_SLOT = "BUSY_SINGLE_SLOT"
+    RECORDING_LIMIT = "RECORDING_LIMIT"
     DISK_LOW = "DISK_LOW"
     WRITE_PERMISSION_DENIED = "WRITE_PERMISSION_DENIED"
     MEDIA_TOOL_MISSING = "MEDIA_TOOL_MISSING"
@@ -36,6 +37,7 @@ MESSAGES = {
     ),
     ErrorCode.STREAM_ENDED: "방송이 종료되었습니다.",
     ErrorCode.BUSY_SINGLE_SLOT: "다른 방송을 녹화하거나 저장하고 있습니다.",
+    ErrorCode.RECORDING_LIMIT: "동시 녹화 상한에 도달했습니다. 자리가 나면 다시 확인합니다.",
     ErrorCode.DISK_LOW: "저장 공간이 부족합니다. 공간을 확보해 주세요.",
     ErrorCode.WRITE_PERMISSION_DENIED: "저장 폴더에 쓸 수 없습니다. 저장 위치를 확인해 주세요.",
     ErrorCode.MEDIA_TOOL_MISSING: "녹화 구성요소가 없습니다. 설치 상태를 확인해 주세요.",

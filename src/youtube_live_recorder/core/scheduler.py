@@ -62,20 +62,13 @@ class Scheduler:
                     try:
                         self.recordings.start(item.id)
                     except AppError as error:
-                        if error.code != ErrorCode.BUSY_SINGLE_SLOT:
+                        if error.code != ErrorCode.RECORDING_LIMIT:
                             raise
                         if self.recordings.preempt_replay():
                             self.repository.set_next_check(item.id, to_iso(now))
                             continue
-                        self.repository.transition(item.id, B.MISSED_BUSY)
-                        self.jobs.ensure(item.id, "다른 라이브 방송 녹화 중", now)
-                        self.jobs.checked(item.id, now, ended=False)
-                        self.repository.add_event(
-                            "scheduler",
-                            "다른 방송 녹화로 건너뛰었습니다.",
-                            broadcast_id=item.id,
-                            error_code=error.code,
-                        )
+                        # 상한 초과 방송도 60초마다 확인한다. 종료되면 다시보기로 전환한다.
+                        self.repository.note_error(item.id, error.code)
                 elif metadata.state in {LiveState.POST_LIVE, LiveState.WAS_LIVE}:
                     self.repository.transition(item.id, B.REPLAY_WAIT)
                     self.jobs.ensure(item.id, "감지 전 방송 종료", now)

@@ -7,6 +7,7 @@ import threading
 from datetime import timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
 from youtube_live_recorder.config import Settings
@@ -85,21 +86,41 @@ def run_self_test(root: Path) -> dict:
     finalizer = FFmpegAdapter(tools.ffmpeg, FFprobeAdapter(tools.ffprobe))
     sample = finalizer.finalize((raw,), folder, "정상_중지_검증.mp4")
 
+    concurrent_clients = set()
+    clients_lock = threading.Lock()
+    all_clients = threading.Event()
+
     class QuietHandler(SimpleHTTPRequestHandler):
         def log_message(self, *_):
             pass
 
+        def do_GET(self):
+            identifier = parse_qs(urlparse(self.path).query).get("stream", [""])[0]
+            with clients_lock:
+                concurrent_clients.add(identifier)
+                if len(concurrent_clients) == 5:
+                    all_clients.set()
+            if not all_clients.wait(60):
+                self.send_error(503)
+                return
+            super().do_GET()
+
     class Metadata:
-        calls = 0
+        def __init__(self):
+            self.calls = {}
+            self.lock = threading.Lock()
 
         def fetch(self, url):
-            self.calls += 1
+            identifier = url[-11:]
+            with self.lock:
+                count = self.calls.get(identifier, 0) + 1
+                self.calls[identifier] = count
             return BroadcastMetadata(
-                "Abc_123-xYz",
+                identifier,
                 "자체 생성 시험 영상",
                 "로컬",
                 "",
-                LiveState.LIVE if self.calls == 1 else LiveState.WAS_LIVE,
+                LiveState.LIVE if count == 1 else LiveState.WAS_LIVE,
             )
 
     server = ThreadingHTTPServer(
@@ -116,9 +137,10 @@ def run_self_test(root: Path) -> dict:
     def local_args(request):
         args = original_args(request)
         # 진단 전용 로컬 서버. 실제 등록 URL의 제한/인증 처리에는 관여하지 않는다.
-        from urllib.parse import quote
-
-        args[-1] = f"http://127.0.0.1:{server.server_port}/{quote(sample.path.name)}"
+        args[-1] = (
+            f"http://127.0.0.1:{server.server_port}/{quote(sample.path.name)}"
+            f"?stream={request.url[-11:]}"
+        )
         return args
 
     adapter.capture_args = local_args
@@ -131,13 +153,20 @@ def run_self_test(root: Path) -> dict:
         confirmation_seconds=0.1,
     )
     try:
-        repository.add_broadcast(
-            "https://youtu.be/Abc_123-xYz", permission_confirmed=True, quality=Quality.BEST
-        )
+        for index in range(5):
+            repository.add_broadcast(
+                f"https://youtu.be/Test{index:07}", permission_confirmed=True, quality=Quality.BEST
+            )
         Scheduler(repository, metadata, manager).tick(utc_now() + timedelta(seconds=1))
-        manager.future.result(timeout=120)
-        session = repository.list_sessions()[0]
-        if session.status != SessionStatus.COMPLETE or not session.ffprobe_ok:
+        for task in manager.tasks.values():
+            task.future.result(timeout=120)
+        sessions = repository.list_sessions()
+        if (
+            len(sessions) != 5
+            or not all_clients.is_set()
+            or any(s.status != SessionStatus.COMPLETE or not s.ffprobe_ok for s in sessions)
+            or len({s.output_path for s in sessions}) != 5
+        ):
             raise RuntimeError("번들 미디어 파이프라인 또는 기록 검증에 실패했습니다.")
         report = {
             "성공": True,
@@ -146,8 +175,10 @@ def run_self_test(root: Path) -> dict:
             "정상 중지": True,
             "MP4 검사": True,
             "DB 검사": database.check_integrity(),
-            "검증 파일": session.output_path,
-            "범위": "로컬 영상 · 실제 YouTube 시험 아님",
+            "검증 파일": sessions[0].output_path,
+            "동시 녹화 수": len(concurrent_clients),
+            "전체 파일": [s.output_path for s in sessions],
+            "범위": "로컬 영상 5개 동시 전송 · 실제 YouTube 시험 아님",
         }
         (folder / "result.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"

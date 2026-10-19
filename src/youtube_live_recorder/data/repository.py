@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from youtube_live_recorder.data.models import (
     RecordingSession,
     SessionStatus,
 )
+from youtube_live_recorder.limits import DEFAULT_CONCURRENT_RECORDINGS, validate_recording_limit
 from youtube_live_recorder.services.interfaces import BroadcastMetadata, MediaInspection
 from youtube_live_recorder.utils.errors import AppError, ErrorCode
 from youtube_live_recorder.utils.logging import redact
@@ -134,16 +136,26 @@ class Repository:
             )
         return self.get_broadcast(identifier)
 
-    def claim_session(self, identifier: str, mode: RecordingMode) -> RecordingSession:
+    def claim_session(
+        self,
+        identifier: str,
+        mode: RecordingMode,
+        *,
+        max_concurrent: int = DEFAULT_CONCURRENT_RECORDINGS,
+        save_folder: Path | None = None,
+    ) -> RecordingSession:
         """DB 원자적 슬롯 획득. 프로세스 생성 전 CREATED 상태부터 슬롯을 점유한다."""
         mode = RecordingMode(mode)
+        validate_recording_limit(max_concurrent)
         now, session_id = to_iso(utc_now()), str(uuid4())
         with self.database.transaction() as connection:
             active = connection.execute(
-                f"SELECT id FROM recording_sessions WHERE status IN {_ACTIVE_SQL}"
-            ).fetchone()
-            if active:
-                raise AppError(ErrorCode.BUSY_SINGLE_SLOT)
+                f"SELECT broadcast_id FROM recording_sessions WHERE status IN {_ACTIVE_SQL}"
+            ).fetchall()
+            if any(row[0] == identifier for row in active):
+                raise AppError(ErrorCode.INVALID_STATE, "이미 녹화 중인 방송입니다.")
+            if len(active) >= max_concurrent:
+                raise AppError(ErrorCode.RECORDING_LIMIT)
             row = connection.execute(
                 "SELECT * FROM broadcasts WHERE id=?", (identifier,)
             ).fetchone()
@@ -157,8 +169,9 @@ class Repository:
             validate_broadcast_transition(BroadcastStatus(row["status"]), target)
             connection.execute(
                 """INSERT INTO recording_sessions
-                   (id,broadcast_id,started_at,status,mode,selected_quality,created_at,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?)""",
+                   (id,broadcast_id,started_at,status,mode,selected_quality,created_at,updated_at,
+                    work_directory)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
                     session_id,
                     identifier,
@@ -168,6 +181,7 @@ class Repository:
                     row["preferred_quality"],
                     now,
                     now,
+                    str(save_folder / ".ylr-work" / session_id) if save_folder else None,
                 ),
             )
             connection.execute(
@@ -190,11 +204,17 @@ class Repository:
         return _session(row)
 
     def active_session(self) -> RecordingSession | None:
+        """가장 먼저 시작한 작업. 전체 목록은 active_sessions()를 사용한다."""
+        sessions = self.active_sessions()
+        return sessions[0] if sessions else None
+
+    def active_sessions(self) -> list[RecordingSession]:
         with self.database.connect() as connection:
-            row = connection.execute(
-                f"SELECT * FROM recording_sessions WHERE status IN {_ACTIVE_SQL}"
-            ).fetchone()
-        return _session(row) if row else None
+            rows = connection.execute(
+                f"SELECT * FROM recording_sessions WHERE status IN {_ACTIVE_SQL} "
+                "ORDER BY started_at, rowid"
+            ).fetchall()
+        return [_session(row) for row in rows]
 
     def set_setting(self, key: str, value: Any) -> None:
         encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)

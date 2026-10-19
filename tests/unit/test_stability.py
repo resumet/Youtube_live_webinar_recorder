@@ -90,7 +90,7 @@ class Capture:
 def manager(repo, folder, metadata, capture, **kwargs):
     return RecordingManager(
         repo,
-        Settings(folder, min_free_bytes=0, max_reconnect_attempts=2),
+        Settings(folder, min_free_bytes=0, max_reconnect_attempts=2, max_concurrent_recordings=1),
         metadata,
         capture,
         Finalizer(),

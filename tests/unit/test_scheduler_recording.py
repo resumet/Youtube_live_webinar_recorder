@@ -69,7 +69,7 @@ class Finalize:
 def setup_manager(repository, tmp_path, metadata, capture=None, finalizer=None):
     return RecordingManager(
         repository,
-        Settings(tmp_path, min_free_bytes=0, max_reconnect_attempts=0),
+        Settings(tmp_path, min_free_bytes=0, max_reconnect_attempts=0, max_concurrent_recordings=1),
         metadata,
         capture or Capture(),
         finalizer or Finalize(),
@@ -85,14 +85,14 @@ def wait_manager(manager):
         manager.future.result(timeout=10)
 
 
-def test_simultaneous_live_uses_registration_order_and_marks_busy(repository, tmp_path):
+def test_capacity_preserves_registration_order_and_keeps_waiting(repository, tmp_path):
     first, second = add(repository), add(repository, "Xyz_987-aBc")
     metadata = Metadata([LiveState.LIVE, LiveState.LIVE])
     manager = setup_manager(repository, tmp_path, metadata, Capture(hold=True))
     try:
         Scheduler(repository, metadata, manager).tick(utc_now() + timedelta(seconds=1))
         assert repository.active_session().broadcast_id == first.id
-        assert repository.get_broadcast(second.id).status == B.MISSED_BUSY
+        assert repository.get_broadcast(second.id).status == B.LIVE_DETECTED
         assert len(repository.list_sessions()) == 1
     finally:
         manager.shutdown()

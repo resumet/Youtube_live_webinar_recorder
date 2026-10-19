@@ -67,13 +67,13 @@ def test_two_workers_cannot_claim_two_recordings(repository, database):
 
     def attempt(item):
         try:
-            return Repository(database).claim_session(item.id, RecordingMode.LIVE)
+            return Repository(database).claim_session(item.id, RecordingMode.LIVE, max_concurrent=1)
         except AppError as error:
             return error.code
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(attempt, items))
-    assert results.count(ErrorCode.BUSY_SINGLE_SLOT) == 1
+    assert results.count(ErrorCode.RECORDING_LIMIT) == 1
     assert sum(hasattr(result, "broadcast_id") for result in results) == 1
     assert repository.active_session() is not None
     with database.connect() as connection:
