@@ -100,3 +100,28 @@
 공식 근거: [FFmpeg 배포 안내](https://ffmpeg.org/download.html),
 [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects),
 [GenerateConsoleCtrlEvent](https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent).
+
+## 2026-10-19 · 패키징과 업데이트
+
+- **실행 파일 두 개**: PyInstaller windowed 모드에는 표준 입출력이 없으므로 GUI 실행 파일로
+  녹화 워커를 재실행하지 않는다. `YouTubeLiveRecorderWorker.exe`가 stdin 시작 게이트,
+  yt-dlp/FFmpeg 출력 및 콘솔 중지 신호를 담당하고 라이브러리는 `_internal`에서 공유한다.
+- **중지 도우미 실패**: 신호 전달 오류/시간 초과가 발생해도 유예 시간 후 Job Object를 정리하고
+  `forced` 결과를 반환한다. 예외 때문에 이미 받은 조각의 파일 마무리를 건너뛰지 않는다.
+- **네트워크 읽기**: 고정 yt-dlp의 FFmpeg downloader는 `--socket-timeout`을 FFmpeg에 전달하지
+  않는다. `--downloader-args ffmpeg_i:-rw_timeout 15000000`을 추가하여 입력별 읽기를 제한한다.
+  연결 실패는 기존 재연결/부분 저장 정책으로 처리한다. 프로토콜별 다른 재시도까지 합친 총 시간은
+  15초로 보장하지 않는다. 근거: [FFmpeg 프로토콜 문서](https://ffmpeg.org/ffmpeg-protocols.html).
+- **업데이트 신뢰**: 설정된 HTTPS 주소의 매니페스트만 사용한다. 비HTTPS 리디렉션, 잘못된 버전,
+  큰 응답/파일, SHA256 불일치, 실행 파일 헤더 오류를 거부한다. 다운로드 완료만으로 실행하지 않는다.
+  설치 직전 해시를 다시 확인한 후 녹화 시작 잠금과 함께 유휴 상태를 확정한다.
+- **설치 경로/데이터**: Inno Setup은 관리자 권한 없이 사용자 프로그램 폴더에 설치한다.
+  DB·로그·녹화 폴더를 설치/제거 대상에 포함하지 않는다. 자동 실행을 등록하지 않는다.
+  실행 중 앱의 Windows mutex가 있으면 업데이트·제거 중 파일 교체를 막는다.
+- **배포 상태**: 설치 컴파일러·앱 코드 서명·공개 릴리스 서버는 실제 준비 여부를 별도로 기록한다.
+  라이선스 파일 수집을 대응 소스/의존 라이선스 제공 의무 전체의 완료로 간주하지 않는다.
+- **자체 진단**: `self-test`는 생성 영상의 정상 중지·실제 yt-dlp 로컬 HTTP 저장·MP4 검사·DB를
+  검증한다. `soak-test`는 지정한 벽시계 시간 동안 GUI와 엔진을 실행한다. 모두 실제 YouTube와 구분한다.
+
+근거: [PyInstaller windowed 모드](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html),
+[Inno Setup AppMutex](https://jrsoftware.org/ishelp/topic_setup_appmutex.htm).

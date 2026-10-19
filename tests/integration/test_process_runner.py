@@ -1,11 +1,35 @@
 import os
+import subprocess
 import sys
+import time
 from threading import Event, Timer
 
 import pytest
 
 from youtube_live_recorder.services.process_runner import ProcessRunner
 from youtube_live_recorder.services.toolchain import Toolchain
+
+
+@pytest.mark.parametrize("failure", [OSError("신호 실패"), subprocess.TimeoutExpired("signal", 5)])
+def test_signal_helper_failure_still_returns_forced_stop(monkeypatch, failure):
+    def interrupt(pid):
+        raise failure
+
+    monkeypatch.setattr(
+        "youtube_live_recorder.services.process_runner.interrupt_process", interrupt
+    )
+    stop = Event()
+    started = time.monotonic()
+    result = ProcessRunner().run(
+        [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(30)"],
+        stop=stop,
+        grace_seconds=0.1,
+        on_line=lambda name, line: stop.set() if "ready" in line else None,
+    )
+    assert result.stopped and result.forced
+    # Windows KILL_ON_JOB_CLOSE는 0을 종료 코드로 보고할 수 있다. forced가 판정 기준이다.
+    assert time.monotonic() - started < 5
+    assert "ready" in result.stdout
 
 
 def test_separate_streams_and_nonzero_exit():

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from youtube_live_recorder import __version__
 from youtube_live_recorder.bootstrap import ApplicationContext
 from youtube_live_recorder.config import Settings
 from youtube_live_recorder.core.engine import Engine
@@ -22,6 +23,7 @@ from youtube_live_recorder.services.interfaces import BroadcastMetadata
 from youtube_live_recorder.services.storage import check_storage
 from youtube_live_recorder.services.thumbnails import fetch_thumbnail
 from youtube_live_recorder.services.toolchain import Toolchain
+from youtube_live_recorder.services.updates import UpdateError, UpdateService
 from youtube_live_recorder.services.ytdlp_adapter import YtdlpAdapter
 from youtube_live_recorder.utils.errors import AppError, ErrorCode
 from youtube_live_recorder.utils.time import to_iso, utc_now
@@ -49,6 +51,9 @@ class Controller(QObject):
     operation_done = Signal(str, bool, str)
     engine_state = Signal(str, str)
     shutdown_ready = Signal()
+    update_checked = Signal(object, str)
+    update_downloaded = Signal(object, str)
+    install_ready = Signal(object, str)
 
     def __init__(self, context: ApplicationContext, *, engine_factory=Engine, metadata=None):
         super().__init__()
@@ -63,6 +68,7 @@ class Controller(QObject):
         self.refresh_lock = threading.Lock()
         self.refresh_pending = False
         self.closing = threading.Event()
+        self.updates = UpdateService(context.paths.root / "updates")
 
     def start(self) -> None:
         if self.engine_future is not None or self.closing.is_set():
@@ -187,9 +193,11 @@ class Controller(QObject):
 
         self._operation("folder", action)
 
-    def stop_recording(self) -> None:
+    def stop_recording(self, session_id: str | None = None) -> None:
         if self.engine:
-            self.engine.recordings.stop()
+            self._operation(
+                "stop", lambda: self.engine.recordings.stop(expected_session_id=session_id)
+            )
 
     def refresh(self) -> None:
         if self.closing.is_set():
@@ -242,3 +250,44 @@ class Controller(QObject):
             self.shutdown_ready.emit()
 
         threading.Thread(target=shutdown, name="desktop-shutdown", daemon=True).start()
+
+    def check_update(self) -> None:
+        def run():
+            try:
+                settings = Settings.load(self.repository)
+                release = self.updates.check(settings.update_manifest_url, __version__)
+                self.update_checked.emit(release, "")
+            except (UpdateError, OSError) as error:
+                self.update_checked.emit(None, str(error))
+
+        if not self.closing.is_set():
+            self.pool.submit(run)
+
+    def download_update(self, release) -> None:
+        def run():
+            try:
+                path = self.updates.download(release, cancelled=self.closing)
+                self.update_downloaded.emit(path, "")
+            except (UpdateError, OSError) as error:
+                self.update_downloaded.emit(None, str(error))
+
+        if not self.closing.is_set():
+            self.pool.submit(run)
+
+    def prepare_install(self, path, release) -> None:
+        def run():
+            try:
+                self.updates.verify_installer(path, release)
+                with self.config_lock:
+                    if self.engine and not self.engine.recordings.freeze_if_idle():
+                        raise UpdateError(
+                            "녹화 또는 파일 정리 중에는 업데이트를 설치할 수 없습니다."
+                        )
+                    if self.repository.active_session():
+                        raise UpdateError("미완료 작업을 복구한 뒤 업데이트를 설치해 주세요.")
+                self.install_ready.emit(path, "")
+            except (UpdateError, OSError) as error:
+                self.install_ready.emit(None, str(error))
+
+        if not self.closing.is_set():
+            self.pool.submit(run)

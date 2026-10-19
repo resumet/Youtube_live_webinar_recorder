@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,7 +24,9 @@ class Settings:
         if not isinstance(saved, str) or not saved or not Path(saved).is_absolute():
             saved = str(default_save_folder())
             repository.set_setting("save_folder", saved)
-        manifest = repository.get_setting("update_manifest_url", "")
+        manifest = os.environ.get(
+            "YLR_UPDATE_MANIFEST_URL", repository.get_setting("update_manifest_url", "")
+        )
         if not isinstance(manifest, str) or (manifest and not manifest.startswith("https://")):
             manifest = ""
         return cls(save_folder=Path(saved), update_manifest_url=manifest)

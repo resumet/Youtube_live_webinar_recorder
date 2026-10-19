@@ -3,9 +3,24 @@
 Windows 10/11에서 허가받은 YouTube 라이브를 자동 감지하고 MP4로 저장하는 프로그램입니다.
 원격 저장소 이름은 `WebinarAutoRecorder`이며 제품 이름은 **YouTube Live Recorder**입니다.
 
-현재 **4단계 안정성 기능**까지 구현했습니다. 한국어 GUI에서 자동 감지·녹화·수동 중지,
-재연결·충돌 후 파일 복구·다시보기 저장과 기록 확인을 실행할 수 있습니다.
-설치 파일·업데이트 기능은 후속 단계 작업이며, 장시간 실제 방송 검증은 아직 남아 있습니다.
+한국어 GUI에서 자동 감지·녹화·수동 중지, 재연결·충돌 후 파일 복구·다시보기 저장과
+기록 확인을 실행할 수 있습니다. **5단계 패키징 검증 중**이며 Python 없이 실행하는 Windows
+폴더형 빌드와 승인형 업데이트 기능을 구현했고 Setup.exe를 생성했습니다.
+설치·재설치·제거와 실제 3시간 시험은 아직 진행 중입니다.
+최신 실행 증거는 [검증 기록](docs/VALIDATION.md)을 확인하세요.
+
+## 빌드된 프로그램 실행
+
+`dist/YouTubeLiveRecorder/` 폴더 전체를 유지한 채 `YouTubeLiveRecorder.exe`를 실행합니다.
+`_internal`과 `YouTubeLiveRecorderWorker.exe`도 함께 필요합니다. 이 빌드는 FFmpeg/FFprobe,
+Deno, Python, Qt를 포함합니다. 개발용 Python이나 별도 FFmpeg 설치는 필요하지 않습니다.
+
+```powershell
+.\dist\YouTubeLiveRecorder\YouTubeLiveRecorder.exe
+```
+
+최초 실행 후 설정에서 저장 폴더를 확인하고, 대시보드에 허가받은 URL과 화질을 등록하세요.
+앱을 완전히 종료하면 감지도 중단됩니다. 다음 실행 시 목록과 설정을 복원하고 다시 감지합니다.
 
 ## 개발 환경 준비
 
@@ -94,6 +109,23 @@ GUI의 **녹화 중지**로 취소한 방송은 다음 실행에서 자동으로
 - FFprobe로 복구할 수 없는 조각도 삭제하지 않습니다. 앱을 다시 실행할 때 실패한 파일을 다시 검사합니다.
   복구 직후 다시 앱이 강제 종료되면 동일 내용의 추가 복구 파일이 생길 수 있으나 기존 파일을 덮어쓰지 않습니다.
 
+## 업데이트와 설치 파일 빌드
+
+업데이트 배포 주소는 기본값이 비어 있습니다. 실제 배포용 HTTPS 매니페스트를
+`YLR_UPDATE_MANIFEST_URL` 또는 DB 설정 `update_manifest_url`로 지정한 경우 새 버전을 확인합니다.
+다운로드와 설치는 각각 사용자 동작이 필요하며, SHA256 검증과 설치 직전 재검사를 수행합니다.
+녹화·복구·파일 정리 중에는 설치하지 않습니다. 실제 배포 서버나 서명 인증서는 아직 구성하지 않았습니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_inno.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
+```
+
+첫 명령은 공식 해시와 게시자 서명을 확인한 Inno Setup을 프로젝트 내부에 준비합니다.
+두 번째 명령은 테스트 → PyInstaller → 번들 실행 검사 → 설치 파일 생성을 수행합니다.
+컴파일러 준비에 실패하면 Setup.exe를 생성한 것으로 처리하지 않습니다.
+출력 경로와 설치·제거 검증 절차는 [패키징 안내](docs/PACKAGING.md)에 있습니다.
+
 `add` 명령은 **URL만 저장**하며 `inspect`는 정보 조회, `watch`는 조회·자동 감지·녹화를 담당합니다.
 도움말의 `--permission-confirmed`는 본인이 저장 권한을 확인했음을 뜻합니다.
 공개 영상이라는 사실만으로 저장 권한이 생기지는 않습니다.
@@ -145,4 +177,4 @@ DB나 녹화 파일은 신뢰할 수 있는 사람에게만 공유하세요.
 
 공식 근거: [yt-dlp](https://github.com/yt-dlp/yt-dlp),
 [EJS/JavaScript 요구사항](https://github.com/yt-dlp/yt-dlp/wiki/EJS).
-배포 시 포함할 외부 바이너리의 라이선스·고지는 5단계에서 실제 번들 기준으로 기록합니다.
+실제 번들 기준 라이선스·고지 및 공개 배포 전 남은 사항은 [외부 구성요소 고지](docs/THIRD_PARTY.md)에 있습니다.

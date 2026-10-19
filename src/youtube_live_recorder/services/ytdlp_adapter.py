@@ -170,6 +170,8 @@ class YtdlpAdapter:
             "--print",
             "before_dl:YLR_FORMAT %(height)j",
             "--hls-use-mpegts",
+            "--downloader-args",
+            "ffmpeg_i:-rw_timeout 15000000",
             "--fixup",
             "never",
             "--live-from-start" if request.from_start else "--no-live-from-start",

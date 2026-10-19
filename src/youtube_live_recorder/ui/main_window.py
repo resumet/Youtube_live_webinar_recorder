@@ -1,3 +1,6 @@
+import ctypes
+import os
+import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QTimer, QUrl, Slot
@@ -52,8 +55,12 @@ class MainWindow(QMainWindow):
         self.quitting = False
         self.allow_close = False
         self.last_notification_folder = None
+        self.last_notification_page = None
         self.tracker = NotificationTracker()
         self.seen_errors = {}
+        self.release = None
+        self.update_path = None
+        self.install_path = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -146,11 +153,11 @@ class MainWindow(QMainWindow):
         self.settings.logs_requested.connect(
             lambda: self.open_folder(self.controller.context.paths.logs)
         )
-        self.settings.update_requested.connect(
-            lambda: self.show_message(
-                "현재 업데이트를 확인할 수 없습니다. 배포 준비 후 제공됩니다.", error=True
-            )
-        )
+        self.settings.update_requested.connect(self.check_update)
+        self.settings.update_action_requested.connect(self.update_action)
+        self.controller.update_checked.connect(self.on_update_checked)
+        self.controller.update_downloaded.connect(self.on_update_downloaded)
+        self.controller.install_ready.connect(self.on_install_ready)
         self.controller.snapshot_ready.connect(self.on_snapshot)
         self.controller.preview_ready.connect(self.on_preview)
         self.controller.operation_done.connect(self.on_operation)
@@ -163,6 +170,8 @@ class MainWindow(QMainWindow):
             self.controller.refresh()
             self.controller.start()
             self.timer.start()
+            if self.controller.context.settings.update_manifest_url:
+                QTimer.singleShot(10000, self.check_update)
 
     def select_page(self, index: int):
         self.stack.setCurrentIndex(index)
@@ -228,6 +237,7 @@ class MainWindow(QMainWindow):
             "edit": "방송 설정을 변경했습니다.",
             "folder": "저장 폴더를 변경했습니다.",
             "retry": "방송 상태를 다시 확인합니다.",
+            "stop": "녹화 중지를 요청했습니다. 파일을 정리하고 있습니다.",
         }
         self.show_message(
             messages.get(name, "작업을 완료했습니다.") if success else message, error=not success
@@ -282,12 +292,15 @@ class MainWindow(QMainWindow):
             if code and self.seen_errors.get(item.id) != code:
                 message = MESSAGES.get(code, "방송 상태를 확인해 주세요.")
                 self.show_message(message, error=True)
+                self.last_notification_folder = None
+                self.last_notification_page = 1
                 self.tray.showMessage(
                     "녹화 확인이 필요합니다", message, QSystemTrayIcon.MessageIcon.Warning, 5000
                 )
             self.seen_errors[item.id] = code
         for notice in self.tracker.update(snapshot.sessions):
             self.last_notification_folder = notice.folder
+            self.last_notification_page = None
             self.tray.showMessage(
                 notice.title, notice.text, QSystemTrayIcon.MessageIcon.Information, 5000
             )
@@ -330,7 +343,9 @@ class MainWindow(QMainWindow):
         ):
             self.stop_pending = True
             self.dashboard.stop_button.setEnabled(False)
-            self.controller.stop_recording()
+            self.controller.stop_recording(
+                self.snapshot.active.id if self.snapshot and self.snapshot.active else None
+            )
 
     @Slot(str, bool)
     def open_recording(self, identifier, folder):
@@ -362,6 +377,8 @@ class MainWindow(QMainWindow):
             self.open_folder(self.last_notification_folder)
         else:
             self.restore_window()
+            if self.last_notification_page is not None:
+                self.select_page(self.last_notification_page)
 
     def tray_activated(self, reason):
         if reason in {
@@ -413,7 +430,95 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def finish_quit(self):
+        if self.install_path:
+            try:
+                if os.name == "nt":
+                    ctypes.windll.kernel32.SetDllDirectoryW(None)
+                subprocess.Popen([str(self.install_path), "/SP-"])
+            except OSError:
+                self.show_message(
+                    "설치 프로그램을 열지 못했습니다. 다운로드 폴더에서 다시 실행해 주세요.",
+                    error=True,
+                )
+                self.open_folder(self.install_path.parent)
         self.allow_close = True
         self.tray.hide()
         self.close()
         QApplication.instance().quit()
+
+    def check_update(self):
+        if self.quitting or not self.settings.update.isEnabled():
+            return
+        self.settings.update.setEnabled(False)
+        self.settings.update_status.setText("업데이트를 확인하고 있습니다.")
+        self.controller.check_update()
+
+    def on_update_checked(self, release, error):
+        if self.quitting:
+            return
+        self.settings.update.setEnabled(True)
+        if error:
+            self.settings.update_status.setText(error)
+            return
+        if release is None:
+            self.settings.update_status.setText("현재 최신 버전을 사용하고 있습니다.")
+            return
+        if release != self.release:
+            self.update_path = None
+        self.release = release
+        self.settings.update_action.setText(
+            "업데이트 설치" if self.update_path else "업데이트 다운로드"
+        )
+        self.settings.update_action.setEnabled(True)
+        self.settings.update_status.setText(f"새 버전 {release.version}\n{release.notes}")
+        self.last_notification_folder = None
+        self.last_notification_page = 3
+        self.tray.showMessage("새 버전이 있습니다", "설정에서 업데이트를 확인해 주세요.")
+
+    def update_action(self):
+        if not self.release or self.quitting:
+            return
+        if self.update_path:
+            if self.snapshot and self.snapshot.active:
+                self.show_message("녹화 또는 파일 정리가 끝난 뒤 설치해 주세요.", error=True)
+                return
+            if confirm(
+                self,
+                "업데이트 설치",
+                f"버전 {self.release.version}을 설치하기 위해 프로그램을 종료할까요?",
+                "종료 후 설치",
+            ):
+                self.settings.update_action.setEnabled(False)
+                self.controller.prepare_install(self.update_path, self.release)
+        else:
+            self.settings.update_action.setEnabled(False)
+            self.settings.update.setEnabled(False)
+            self.settings.update_status.setText(
+                "설치 파일을 다운로드하고 무결성을 확인하고 있습니다."
+            )
+            self.controller.download_update(self.release)
+
+    def on_update_downloaded(self, path, error):
+        if self.quitting:
+            return
+        self.settings.update.setEnabled(True)
+        self.settings.update_action.setEnabled(True)
+        if error:
+            self.settings.update_status.setText(error)
+            return
+        self.update_path = path
+        self.settings.update_action.setText("업데이트 설치")
+        self.settings.update_status.setText(
+            "파일 검사를 통과했습니다. 설치 버튼을 눌러 진행하세요."
+        )
+
+    def on_install_ready(self, path, error):
+        if error:
+            self.show_message(error, error=True)
+            self.settings.update_action.setEnabled(True)
+            return
+        self.install_path = path
+        self.quitting = True
+        self.timer.stop()
+        self.centralWidget().setEnabled(False)
+        self.controller.close_async()

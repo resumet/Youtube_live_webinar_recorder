@@ -73,8 +73,12 @@ class RecordingManager:
                 raise
             return session
 
-    def stop(self, reason: str = "user") -> None:
+    def stop(self, reason: str = "user", *, expected_session_id: str | None = None) -> None:
         with self.lock:
+            if expected_session_id:
+                active = self.repository.active_session()
+                if active is None or active.id != expected_session_id:
+                    return
             if not self.stop_event.is_set():
                 self.stop_reason = reason
                 self.stop_event.set()
@@ -99,6 +103,16 @@ class RecordingManager:
             if not self.stop_event.is_set():
                 self.stop_reason = "shutdown"
                 self.stop_event.set()
+
+    def freeze_if_idle(self) -> bool:
+        """설치 준비와 새 슬롯 획득의 경쟁을 막는다. 실행 중 녹화는 중단하지 않는다."""
+        with self.lock:
+            if self.repository.active_session() is not None:
+                return False
+            self.accepting = False
+            self.stop_reason = "shutdown"
+            self.stop_event.set()
+            return True
 
     def _disk_watch(self, stop: Event, done: Event) -> None:
         while not done.wait(self.disk_interval):

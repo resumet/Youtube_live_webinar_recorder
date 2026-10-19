@@ -26,7 +26,7 @@ class ProcessResult:
 
 def worker_command() -> list[str]:
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--worker"]
+        return [str(Path(sys.executable).with_name("YouTubeLiveRecorderWorker.exe")), "--worker"]
     return [sys.executable, "-m", "youtube_live_recorder.services.worker"]
 
 
@@ -34,8 +34,9 @@ def interrupt_process(pid: int) -> int:
     if os.name != "nt":
         os.killpg(pid, signal.SIGINT)
         return 0
-    helper = [sys.executable]
+    helper = [str(Path(sys.executable).with_name("YouTubeLiveRecorderWorker.exe"))]
     if not getattr(sys, "frozen", False):
+        helper = [sys.executable]
         helper += ["-m", "youtube_live_recorder"]
     helper += ["--signal-console", str(pid)]
     result = subprocess.run(
@@ -130,7 +131,17 @@ class ProcessRunner:
                     stopped = stop is not None and stop.is_set()
                     if stopped or timed_out:
                         stop_started = now
-                        interrupt_process(process.pid)
+                        try:
+                            if interrupt_process(process.pid):
+                                logging.getLogger(__name__).warning(
+                                    "정상 중지 신호를 전달하지 못했습니다. 유예 후 종료합니다."
+                                )
+                        except (OSError, subprocess.TimeoutExpired):
+                            # 신호 도우미가 실패해도 아래의 제한 시간과 Job 정리를 유지한다.
+                            # 예외로 탈출하면 녹화기가 이미 받은 파일을 마무리할 수 없다.
+                            logging.getLogger(__name__).warning(
+                                "정상 중지 신호 처리 실패. 유예 후 종료합니다."
+                            )
                     elif on_tick:
                         on_tick()
                 elif now - stop_started >= grace_seconds:

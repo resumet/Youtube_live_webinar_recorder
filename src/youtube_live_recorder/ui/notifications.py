@@ -1,7 +1,12 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from youtube_live_recorder.data.models import ACTIVE_SESSIONS, RecordingSession, SessionStatus
+from youtube_live_recorder.data.models import (
+    ACTIVE_SESSIONS,
+    RecordingMode,
+    RecordingSession,
+    SessionStatus,
+)
 from youtube_live_recorder.utils.time import from_iso, utc_now
 
 
@@ -28,7 +33,11 @@ class NotificationTracker:
                 continue
             if previous is None and item.status in ACTIVE_SESSIONS:
                 notices.append(
-                    Notification("녹화를 시작했습니다", "라이브 방송을 저장하고 있습니다.")
+                    Notification(
+                        "다시보기 저장을 시작했습니다", "공개된 다시보기를 저장하고 있습니다."
+                    )
+                    if item.mode == RecordingMode.REPLAY
+                    else Notification("녹화를 시작했습니다", "라이브 방송을 저장하고 있습니다.")
                 )
             elif (
                 item.status in {SessionStatus.COMPLETE, SessionStatus.PARTIAL} and item.output_path

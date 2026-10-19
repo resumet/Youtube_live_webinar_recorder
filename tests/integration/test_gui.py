@@ -12,6 +12,7 @@ from youtube_live_recorder.data.models import BroadcastStatus as B
 from youtube_live_recorder.data.models import Quality, RecordingMode
 from youtube_live_recorder.data.models import SessionStatus as S
 from youtube_live_recorder.services.interfaces import BroadcastMetadata, LiveState
+from youtube_live_recorder.services.updates import Release, UpdateService
 from youtube_live_recorder.ui.controller import Controller, Snapshot
 from youtube_live_recorder.ui.main_window import MainWindow
 from youtube_live_recorder.ui.notifications import NotificationTracker
@@ -107,6 +108,36 @@ def test_close_hides_to_tray_without_stopping_engine(desktop, monkeypatch):
     assert window.isVisible()
 
 
+def test_stop_request_does_not_block_ui_while_engine_lock_is_busy(desktop, qtbot):
+    _, controller, _ = desktop
+    gate = threading.Event()
+    entered = threading.Event()
+
+    class BusyRecorder:
+        def stop(self, *, expected_session_id=None):
+            assert expected_session_id == "current-session"
+            entered.set()
+            gate.wait(5)
+
+    class FakeEngine:
+        recordings = BusyRecorder()
+
+        def stop(self):
+            pass
+
+    controller.engine = FakeEngine()
+    ticks = []
+    timer = QTimer()
+    timer.timeout.connect(lambda: ticks.append(1))
+    timer.start(10)
+    controller.stop_recording("current-session")
+    qtbot.waitUntil(entered.is_set, timeout=1000)
+    qtbot.waitUntil(lambda: len(ticks) >= 5, timeout=1000)
+    with qtbot.waitSignal(controller.operation_done, timeout=5000):
+        gate.set()
+    timer.stop()
+
+
 def test_engine_start_error_remains_visible(desktop, qtbot):
     window, controller, _ = desktop
 
@@ -120,6 +151,55 @@ def test_engine_start_error_remains_visible(desktop, qtbot):
     controller.engine_future.result(timeout=5)
     assert "녹화 도구" in window.banner.text()
     assert not window.engine_running
+
+
+def test_update_install_guard_rejects_active_recording(desktop, qtbot, tmp_path):
+    _, controller, context = desktop
+    item = context.repository.add_broadcast(
+        "https://youtu.be/Abc_123-xYz", permission_confirmed=True
+    )
+    context.repository.transition(item.id, B.LIVE_DETECTED)
+    context.repository.claim_session(item.id, RecordingMode.LIVE)
+
+    class VerifiedUpdate:
+        def verify_installer(self, *_):
+            pass
+
+    controller.updates = VerifiedUpdate()
+    with qtbot.waitSignal(controller.install_ready, timeout=5000) as signal:
+        controller.prepare_install(tmp_path / "Setup.exe", None)
+    assert signal.args[0] is None and "미완료" in signal.args[1]
+    assert not controller.closing.is_set()
+
+
+def test_update_check_download_ui_never_runs_installer_without_click(desktop, qtbot, tmp_path):
+    import hashlib
+    import io
+    import json
+
+    window, controller, context = desktop
+    content = b"MZfixture"
+    release = Release(
+        "0.2.0", "https://updates.example/Setup.exe", hashlib.sha256(content).hexdigest()
+    )
+    data = json.dumps(
+        {"version": release.version, "download_url": release.download_url, "sha256": release.sha256}
+    ).encode()
+    controller.updates = UpdateService(
+        tmp_path / "updates",
+        opener=lambda url: io.BytesIO(data if url.endswith(".json") else content),
+    )
+    context.repository.set_setting("update_manifest_url", "https://updates.example/release.json")
+    with qtbot.waitSignal(controller.update_checked, timeout=5000):
+        window.check_update()
+    assert window.release.version == "0.2.0" and window.update_path is None
+    window.notification_clicked()
+    assert window.stack.currentIndex() == 3
+    with qtbot.waitSignal(controller.update_downloaded, timeout=5000):
+        window.update_action()
+    assert window.update_path.is_file()
+    assert window.install_path is None and not controller.closing.is_set()
+    assert window.settings.update_action.text() == "업데이트 설치"
 
 
 def test_notification_click_opens_last_completed_folder(desktop, monkeypatch):

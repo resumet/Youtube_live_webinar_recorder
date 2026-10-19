@@ -54,7 +54,16 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = commands.add_parser("inspect", help="실제 방송 정보와 라이브 상태 조회")
     inspect.add_argument("url", help="YouTube 방송 URL")
     commands.add_parser("watch", help="대기 방송 자동 감지·녹화 시작 (Ctrl+C로 안전 중지)")
-    commands.add_parser("gui", help="한국어 데스크톱 프로그램 실행")
+    gui = commands.add_parser("gui", help="한국어 데스크톱 프로그램 실행")
+    gui.add_argument(
+        "--smoke-report", type=Path, help="개발 검증: 화면 렌더링 후 결과 저장 및 종료"
+    )
+    commands.add_parser("self-test", help="자체 생성 영상으로 설치된 녹화 도구·정상 중지·MP4 검사")
+    soak = commands.add_parser(
+        "soak-test", help="개발 검증: 자체 생성 영상으로 장시간 GUI·녹화 실행"
+    )
+    soak.add_argument("--seconds", type=int, default=10800, help="실제 실행 시간(초), 기본 3시간")
+    soak.add_argument("--report", type=Path, required=True, help="검증 결과 JSON 경로")
     return parser
 
 
@@ -76,12 +85,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+    if args.command == "soak-test" and args.data_dir is None:
+        print(
+            "장시간 검증에는 --data-dir로 별도의 빈 데이터 폴더를 지정해 주세요.", file=sys.stderr
+        )
+        return 2
     try:
         context = bootstrap(args.data_dir)
+        if args.command in {"gui", "watch", "soak-test"}:
+            from youtube_live_recorder.utils.running_mutex import mark_application_running
+
+            mark_application_running()
         if args.command == "gui":
             from youtube_live_recorder.ui.application import run_gui
 
-            return run_gui(context)
+            if args.smoke_report and context.repository.list_broadcasts(include_terminal=True):
+                raise RuntimeError("화면 검증에는 방송이 없는 별도 데이터 폴더를 사용하세요.")
+            return run_gui(context, smoke_report=args.smoke_report)
+        if args.command == "soak-test":
+            from youtube_live_recorder.services.soak_test import run_soak
+
+            return run_soak(context, args.seconds, args.report)
+        if args.command == "self-test":
+            from youtube_live_recorder.services.diagnostics import run_self_test
+
+            print(json.dumps(run_self_test(context.paths.root), ensure_ascii=False, indent=2))
+            return 0
         if args.command == "init":
             print(f"초기화 완료 · 데이터베이스: {context.paths.database}")
             print(f"로그 폴더: {context.paths.logs}")

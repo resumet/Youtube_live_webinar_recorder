@@ -1,6 +1,8 @@
+import json
 import sys
+from pathlib import Path
 
-from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+from PySide6.QtCore import QLibraryInfo, QLocale, QTimer, QTranslator
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
@@ -9,7 +11,7 @@ from youtube_live_recorder.ui.controller import Controller
 from youtube_live_recorder.ui.main_window import MainWindow
 
 
-def run_gui(context: ApplicationContext) -> int:
+def run_gui(context: ApplicationContext, *, smoke_report: Path | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("YouTube Live Recorder")
     app.setOrganizationName("YouTubeLiveRecorder")
@@ -22,4 +24,28 @@ def run_gui(context: ApplicationContext) -> int:
     controller = Controller(context)
     window = MainWindow(controller)
     window.show()
+    if smoke_report:
+        heartbeats = []
+        timer = QTimer(window)
+        timer.timeout.connect(lambda: heartbeats.append(1))
+        timer.start(50)
+
+        def finish_smoke():
+            smoke_report.parent.mkdir(parents=True, exist_ok=True)
+            screenshot = smoke_report.with_suffix(".png")
+            rendered = window.grab().save(str(screenshot))
+            report = {
+                "성공": bool(rendered and len(heartbeats) >= 5 and window.engine_running),
+                "UI 타이머 횟수": len(heartbeats),
+                "엔진 실행": window.engine_running,
+                "화면": str(screenshot),
+            }
+            smoke_report.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            window.quitting = True
+            window.timer.stop()
+            controller.close_async()
+
+        QTimer.singleShot(3000, finish_smoke)
     return app.exec()
