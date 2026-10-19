@@ -125,3 +125,4 @@ class RecordingSession:
     work_directory: str | None = None
     coverage_note: str = ""
     from_start_attempted: bool = False
+    recovery_attempts: int = 0

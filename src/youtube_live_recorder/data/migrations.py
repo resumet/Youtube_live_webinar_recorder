@@ -100,6 +100,12 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE recording_sessions ADD COLUMN coverage_note TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE recording_sessions ADD COLUMN from_start_attempted INTEGER NOT NULL DEFAULT 0",
     ),
+    3: (
+        "ALTER TABLE recording_sessions ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE recording_segments ADD COLUMN duration_seconds REAL",
+        "ALTER TABLE recording_segments ADD COLUMN height INTEGER",
+        "ALTER TABLE recording_segments ADD COLUMN failure_reason TEXT",
+    ),
 }
 
 SCHEMA_VERSION = max(MIGRATIONS)

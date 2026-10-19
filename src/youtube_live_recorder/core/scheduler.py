@@ -5,9 +5,12 @@ from threading import Event
 
 from youtube_live_recorder.config import POLL_SECONDS
 from youtube_live_recorder.core.recording_manager import RecordingManager
+from youtube_live_recorder.core.replay_watcher import ReplayWatcher
 from youtube_live_recorder.data.models import BroadcastStatus as B
+from youtube_live_recorder.data.replays import ReplayStore
 from youtube_live_recorder.data.repository import Repository
 from youtube_live_recorder.services.interfaces import LiveState, MetadataProvider
+from youtube_live_recorder.services.power import PowerManager
 from youtube_live_recorder.utils.errors import AppError, ErrorCode
 from youtube_live_recorder.utils.time import from_iso, to_iso, utc_now
 
@@ -22,9 +25,13 @@ class Scheduler:
         recordings: RecordingManager,
         *,
         jitter=random.uniform,
+        power=None,
     ) -> None:
         self.repository, self.metadata, self.recordings = repository, metadata, recordings
         self.jitter = jitter
+        self.replays = ReplayWatcher(repository, metadata, recordings)
+        self.jobs = ReplayStore(repository)
+        self.power = power or PowerManager()
 
     def tick(self, now: datetime | None = None, *, stop: Event | None = None) -> None:
         now = now or utc_now()
@@ -57,7 +64,12 @@ class Scheduler:
                     except AppError as error:
                         if error.code != ErrorCode.BUSY_SINGLE_SLOT:
                             raise
+                        if self.recordings.preempt_replay():
+                            self.repository.set_next_check(item.id, to_iso(now))
+                            continue
                         self.repository.transition(item.id, B.MISSED_BUSY)
+                        self.jobs.ensure(item.id, "다른 라이브 방송 녹화 중", now)
+                        self.jobs.checked(item.id, now, ended=False)
                         self.repository.add_event(
                             "scheduler",
                             "다른 방송 녹화로 건너뛰었습니다.",
@@ -66,6 +78,7 @@ class Scheduler:
                         )
                 elif metadata.state in {LiveState.POST_LIVE, LiveState.WAS_LIVE}:
                     self.repository.transition(item.id, B.REPLAY_WAIT)
+                    self.jobs.ensure(item.id, "감지 전 방송 종료", now)
             except AppError as error:
                 delay = min(600, POLL_SECONDS * 2 ** min(item.poll_failures + 1, 4))
                 delay += self.jitter(0, delay * 0.1)
@@ -83,11 +96,18 @@ class Scheduler:
                         ErrorCode.WRITE_PERMISSION_DENIED,
                     },
                 )
+        self.replays.tick(now, stop)
 
     def run(self, stop: Event) -> None:
         while not stop.is_set():
             try:
+                pending = self.repository.list_broadcasts()
+                self.power.set_required(
+                    bool(self.repository.active_session())
+                    or any(item.status != B.ERROR for item in pending)
+                )
                 self.tick(stop=stop)
             except Exception:
                 LOGGER.exception("방송 감지 작업 오류")
             stop.wait(1)
+        # Engine이 파일 정리 후 같은 스레드에서 절전 방지를 해제한다.

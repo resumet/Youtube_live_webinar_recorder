@@ -4,6 +4,7 @@ from pathlib import Path
 from youtube_live_recorder.services.ffprobe_adapter import FFprobeAdapter
 from youtube_live_recorder.services.interfaces import MediaInspection
 from youtube_live_recorder.services.process_runner import ProcessRunner
+from youtube_live_recorder.services.storage import check_storage
 from youtube_live_recorder.utils.errors import AppError, ErrorCode
 from youtube_live_recorder.utils.filenames import reservation_marker, reserve_output
 
@@ -32,6 +33,9 @@ class FFmpegAdapter:
             v = max(video, key=lambda item: item.size_bytes)
             a = max(audio, key=lambda item: item.size_bytes)
             args += ["-i", str(v.path), "-i", str(a.path), "-map", "0:v:0", "-map", "1:a:0"]
+        # remux 중에는 원본과 새 파일이 동시에 존재한다. 원본 조각을 지워 공간을 만들지 않는다.
+        needed = best.size_bytes if combined else v.size_bytes + a.size_bytes
+        check_storage(folder, needed + 64 * 1024 * 1024)
         output = reserve_output(folder, name)
         staging = output.with_name(output.stem + ".finalizing.mp4")
         try:

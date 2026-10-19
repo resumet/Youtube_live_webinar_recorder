@@ -164,6 +164,9 @@ class Controller(QObject):
             "edit", lambda: self.repository.edit_broadcast(identifier, quality, filename)
         )
 
+    def retry(self, identifier: str) -> None:
+        self._operation("retry", lambda: self.repository.retry_broadcast(identifier))
+
     def save_folder(self, folder: Path) -> None:
         def action():
             if not folder.is_absolute():

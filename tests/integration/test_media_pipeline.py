@@ -1,14 +1,22 @@
 import functools
+import os
+import subprocess
+import sys
 import threading
+import time
 from datetime import timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 from youtube_live_recorder.config import Settings
 from youtube_live_recorder.core.recording_manager import RecordingManager
+from youtube_live_recorder.core.recovery_manager import RecoveryManager
 from youtube_live_recorder.core.scheduler import Scheduler
+from youtube_live_recorder.data.db import Database
 from youtube_live_recorder.data.models import BroadcastStatus, Quality, SessionStatus
+from youtube_live_recorder.data.repository import Repository
 from youtube_live_recorder.services.ffmpeg_adapter import FFmpegAdapter
 from youtube_live_recorder.services.ffprobe_adapter import FFprobeAdapter
 from youtube_live_recorder.services.interfaces import BroadcastMetadata, CaptureRequest, LiveState
@@ -16,6 +24,68 @@ from youtube_live_recorder.services.process_runner import ProcessRunner
 from youtube_live_recorder.services.toolchain import Toolchain
 from youtube_live_recorder.services.ytdlp_adapter import YtdlpAdapter
 from youtube_live_recorder.utils.time import utc_now
+
+
+def test_crashed_process_reopens_database_and_recovers_real_media(sample, tmp_path, tools):
+    database_path = tmp_path / "crashed.db"
+    ready = tmp_path / "ready"
+    script = tmp_path / "crash_fixture.py"
+    script.write_text(
+        """
+import sys, shutil, time
+from pathlib import Path
+from youtube_live_recorder.data.db import Database
+from youtube_live_recorder.data.repository import Repository
+from youtube_live_recorder.data.models import BroadcastStatus as B
+from youtube_live_recorder.data.models import SessionStatus as S, RecordingMode
+db = Database(Path(sys.argv[1]))
+db.initialize()
+repo = Repository(db)
+item = repo.add_broadcast("https://youtu.be/Abc_123-xYz", permission_confirmed=True)
+repo.transition(item.id, B.LIVE_DETECTED)
+session = repo.claim_session(item.id, RecordingMode.LIVE)
+work = Path(sys.argv[2]).parent / ".ylr-work" / session.id
+work.mkdir(parents=True)
+repo.set_session_state(session.id, S.RUNNING, work_directory=str(work))
+repo.add_segment(session.id, 0, str(work))
+shutil.copyfile(sys.argv[2], work / "capture.mp4.part")
+Path(sys.argv[3]).write_text(session.id)
+time.sleep(30)
+""",
+        encoding="utf-8",
+    )
+    process = subprocess.Popen(
+        [sys.executable, str(script), str(database_path), str(sample), str(ready)],
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists()
+        session_id = ready.read_text()
+        process.kill()
+        process.wait(5)
+        database = Database(database_path)
+        database.initialize()
+        repo = Repository(database)
+        finalizer = FFmpegAdapter(tools.ffmpeg, FFprobeAdapter(tools.ffprobe))
+        recovery = RecoveryManager(repo, Settings(tmp_path), finalizer)
+        recovery.run()
+        session = repo.get_session(session_id)
+        assert session.status == SessionStatus.PARTIAL and session.ffprobe_ok
+        assert finalizer.verifier.inspect(Path(session.output_path)).valid
+        assert repo.get_broadcast(session.broadcast_id).status == BroadcastStatus.ERROR_RETRYABLE
+        assert repo.active_session() is None and database.check_integrity()
+        assert list((tmp_path / ".ylr-work").rglob("*.part"))
+        assert len(list(tmp_path.glob("*복구*.mp4"))) == 1
+        recovery.run()
+        assert len(list(tmp_path.glob("*복구*.mp4"))) == 1
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(5)
+
 
 pytestmark = pytest.mark.media
 

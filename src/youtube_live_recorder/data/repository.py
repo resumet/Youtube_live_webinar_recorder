@@ -173,6 +173,11 @@ class Repository:
             connection.execute(
                 "UPDATE broadcasts SET status=?,updated_at=? WHERE id=?", (target, now, identifier)
             )
+            if mode == RecordingMode.REPLAY:
+                connection.execute(
+                    "UPDATE replay_jobs SET status='DOWNLOADING' WHERE broadcast_id=?",
+                    (identifier,),
+                )
         return self.get_session(session_id)
 
     def get_session(self, identifier: str) -> RecordingSession:
@@ -343,7 +348,8 @@ class Repository:
             broadcast = connection.execute(
                 "SELECT status FROM broadcasts WHERE id=?", (row["broadcast_id"],)
             ).fetchone()
-            validate_broadcast_transition(BroadcastStatus(broadcast[0]), broadcast_target)
+            if BroadcastStatus(broadcast[0]) != broadcast_target:
+                validate_broadcast_transition(BroadcastStatus(broadcast[0]), broadcast_target)
             connection.execute(
                 """UPDATE recording_sessions SET status=?,ended_at=?,output_path=?,
                 duration_seconds=?,size_bytes=?,ffprobe_ok=?,actual_quality=?,
@@ -365,6 +371,17 @@ class Repository:
                 "UPDATE broadcasts SET status=?,updated_at=? WHERE id=?",
                 (broadcast_target, now, row["broadcast_id"]),
             )
+            if row["mode"] == RecordingMode.REPLAY:
+                connection.execute(
+                    "UPDATE replay_jobs SET status=?,output_path=? WHERE broadcast_id=?",
+                    (
+                        "COMPLETE" if target == SessionStatus.COMPLETE else "WAITING",
+                        str(inspection.path)
+                        if inspection and target == SessionStatus.COMPLETE
+                        else None,
+                        row["broadcast_id"],
+                    ),
+                )
 
     def add_segment(self, session_id: str, index: int, temporary: str) -> str:
         identifier = str(uuid4())
@@ -377,16 +394,22 @@ class Repository:
             )
         return identifier
 
-    def finish_segment(self, identifier: str, inspection: MediaInspection | None) -> None:
+    def finish_segment(
+        self, identifier: str, inspection: MediaInspection | None, reason: str = ""
+    ) -> None:
         with self.database.transaction() as connection:
             connection.execute(
-                """UPDATE recording_segments SET final_path=?,ended_at=?,status=?,bytes_written=?
+                """UPDATE recording_segments SET final_path=?,ended_at=?,status=?,bytes_written=?,
+                duration_seconds=?,height=?,failure_reason=?
                 WHERE id=?""",
                 (
                     str(inspection.path) if inspection else None,
                     to_iso(utc_now()),
                     "COMPLETE" if inspection and inspection.valid else "PARTIAL",
                     inspection.size_bytes if inspection else 0,
+                    inspection.duration_seconds if inspection else None,
+                    inspection.height if inspection else None,
+                    reason or None,
                     identifier,
                 ),
             )
@@ -422,4 +445,67 @@ class Repository:
                 "UPDATE recording_sessions SET actual_quality=?,updated_at=? "
                 "WHERE id=? AND status='RUNNING'",
                 (f"{height}p", to_iso(utc_now()), session_id),
+            )
+
+    def list_segments(self, session_id: str) -> list[dict]:
+        with self.database.connect() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM recording_segments WHERE session_id=? ORDER BY segment_index",
+                    (session_id,),
+                )
+            ]
+
+    def set_next_check(self, identifier: str, timestamp: str) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE broadcasts SET next_check_at=? WHERE id=?", (timestamp, identifier)
+            )
+
+    def note_error(self, identifier: str, code: str) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE broadcasts SET last_error_code=? WHERE id=?", (code, identifier)
+            )
+
+    def note_coverage(self, session_id: str, note: str) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE recording_sessions SET coverage_note=? WHERE id=?", (note, session_id)
+            )
+
+    def mark_recovery_attempt(self, session_id: str) -> None:
+        with self.database.transaction() as connection:
+            connection.execute(
+                "UPDATE recording_sessions SET recovery_attempts=recovery_attempts+1 WHERE id=?",
+                (session_id,),
+            )
+
+    def retry_broadcast(self, identifier: str) -> None:
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                "SELECT status FROM broadcasts WHERE id=?", (identifier,)
+            ).fetchone()
+            if row is None or row[0] not in {"ERROR", "ERROR_RETRYABLE"}:
+                raise AppError(ErrorCode.INVALID_STATE)
+            if connection.execute(
+                "SELECT id FROM recording_sessions WHERE broadcast_id=? "
+                f"AND status IN {_ACTIVE_SQL}",
+                (identifier,),
+            ).fetchone():
+                raise AppError(ErrorCode.INVALID_STATE)
+            job = connection.execute(
+                "SELECT deadline_at FROM replay_jobs WHERE broadcast_id=?", (identifier,)
+            ).fetchone()
+            # 종료를 관찰한 다시보기의 기존 기한을 수동 재시도로 연장하지 않는다.
+            target = "REPLAY_WAIT" if job and job[0] else "WAITING"
+            now = to_iso(utc_now())
+            connection.execute(
+                "UPDATE broadcasts SET status=?,next_check_at=?,poll_failures=0,"
+                "last_error_code=NULL WHERE id=?",
+                (target, now, identifier),
+            )
+            connection.execute(
+                "UPDATE replay_jobs SET next_check_at=? WHERE broadcast_id=?", (now, identifier)
             )

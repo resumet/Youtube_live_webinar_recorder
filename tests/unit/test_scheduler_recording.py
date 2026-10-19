@@ -69,7 +69,7 @@ class Finalize:
 def setup_manager(repository, tmp_path, metadata, capture=None, finalizer=None):
     return RecordingManager(
         repository,
-        Settings(tmp_path, min_free_bytes=0),
+        Settings(tmp_path, min_free_bytes=0, max_reconnect_attempts=0),
         metadata,
         capture or Capture(),
         finalizer or Finalize(),
@@ -210,7 +210,7 @@ def test_one_ended_response_or_http_failure_cannot_complete(repository, tmp_path
     try:
         Scheduler(repository, metadata, manager).tick(utc_now() + timedelta(seconds=1))
         wait_manager(manager)
-        assert repository.get_broadcast(item.id).status == B.ERROR_RETRYABLE
+        assert repository.get_broadcast(item.id).status == B.REPLAY_WAIT
         assert repository.list_sessions()[0].status == S.PARTIAL
         assert repository.list_sessions()[0].ffprobe_ok
     finally:
@@ -238,7 +238,7 @@ def test_failed_verification_never_reports_complete(repository, tmp_path):
     try:
         Scheduler(repository, metadata, manager).tick(utc_now() + timedelta(seconds=1))
         wait_manager(manager)
-        assert repository.get_broadcast(item.id).status == B.ERROR_RETRYABLE
+        assert repository.get_broadcast(item.id).status == B.REPLAY_WAIT
         assert repository.list_sessions()[0].status == S.FAILED
         assert not repository.list_sessions()[0].ffprobe_ok
         assert repository.active_session() is None

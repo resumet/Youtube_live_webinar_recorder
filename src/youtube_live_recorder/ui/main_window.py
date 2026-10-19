@@ -29,7 +29,7 @@ from youtube_live_recorder.ui.queue_page import QueuePage
 from youtube_live_recorder.ui.settings_page import SettingsPage
 from youtube_live_recorder.ui.theme import STYLE, ensure_system_font, status_icon
 from youtube_live_recorder.ui.widgets import label
-from youtube_live_recorder.utils.errors import AppError
+from youtube_live_recorder.utils.errors import MESSAGES, AppError
 from youtube_live_recorder.utils.time import from_iso, utc_now
 from youtube_live_recorder.utils.urls import parse_video_url
 
@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self.allow_close = False
         self.last_notification_folder = None
         self.tracker = NotificationTracker()
+        self.seen_errors = {}
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -139,6 +140,7 @@ class MainWindow(QMainWindow):
         self.dashboard.stop_requested.connect(self.stop_recording)
         self.queue.edit_requested.connect(self.edit_broadcast)
         self.queue.cancel_requested.connect(self.cancel_broadcast)
+        self.queue.retry_requested.connect(self.controller.retry)
         self.history.open_requested.connect(self.open_recording)
         self.settings.folder_requested.connect(self.controller.save_folder)
         self.settings.logs_requested.connect(
@@ -225,6 +227,7 @@ class MainWindow(QMainWindow):
             "cancel": "방송 대기를 취소했습니다.",
             "edit": "방송 설정을 변경했습니다.",
             "folder": "저장 폴더를 변경했습니다.",
+            "retry": "방송 상태를 다시 확인합니다.",
         }
         self.show_message(
             messages.get(name, "작업을 완료했습니다.") if success else message, error=not success
@@ -274,6 +277,15 @@ class MainWindow(QMainWindow):
                 (utc_now() - from_iso(snapshot.active.started_at)).total_seconds()
             )
         self.tray.setToolTip(f"YouTube Live Recorder · {tooltip}")
+        for item in snapshot.queue:
+            code = item.last_error_code if item.status == BroadcastStatus.ERROR else None
+            if code and self.seen_errors.get(item.id) != code:
+                message = MESSAGES.get(code, "방송 상태를 확인해 주세요.")
+                self.show_message(message, error=True)
+                self.tray.showMessage(
+                    "녹화 확인이 필요합니다", message, QSystemTrayIcon.MessageIcon.Warning, 5000
+                )
+            self.seen_errors[item.id] = code
         for notice in self.tracker.update(snapshot.sessions):
             self.last_notification_folder = notice.folder
             self.tray.showMessage(
@@ -327,6 +339,9 @@ class MainWindow(QMainWindow):
             if self.snapshot
             else None
         )
+        if session and folder and not session.output_path and session.work_directory:
+            self.open_folder(Path(session.work_directory))
+            return
         if not session or not session.output_path:
             self.show_message("저장된 파일이 있는 녹화 기록을 선택해 주세요.", error=True)
             return

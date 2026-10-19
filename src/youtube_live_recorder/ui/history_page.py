@@ -30,7 +30,7 @@ class HistoryPage(QWidget):
         self.empty = label("아직 녹화 기록이 없습니다.", "muted")
         layout.addWidget(self.empty)
         self.table = table(
-            ["방송 제목", "시작 날짜", "결과", "길이", "용량", "원본 URL", "저장 경로"]
+            ["방송 제목", "시작 날짜", "결과", "길이", "용량", "원본 URL", "저장 경로", "안내"]
         )
         self.table.setObjectName("historyTable")
         self.table.cellDoubleClicked.connect(
@@ -63,6 +63,7 @@ class HistoryPage(QWidget):
                         size_label(session.size_bytes),
                         item.original_url if item else "",
                         session.output_path or "완료 파일 없음",
+                        session.failure_reason or session.coverage_note,
                     ],
                 )
             )

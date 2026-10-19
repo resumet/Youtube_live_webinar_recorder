@@ -1,11 +1,15 @@
 import logging
+import random
 from concurrent.futures import Future, ThreadPoolExecutor
-from threading import Event, Lock
+from dataclasses import replace
+from pathlib import Path
+from threading import Event, Lock, Thread
 
 from youtube_live_recorder.config import Settings
 from youtube_live_recorder.data.models import BroadcastStatus as B
 from youtube_live_recorder.data.models import RecordingMode, RecordingSession
 from youtube_live_recorder.data.models import SessionStatus as S
+from youtube_live_recorder.data.replays import ReplayStore
 from youtube_live_recorder.data.repository import Repository
 from youtube_live_recorder.services.ffmpeg_adapter import FFmpegAdapter
 from youtube_live_recorder.services.interfaces import (
@@ -17,9 +21,10 @@ from youtube_live_recorder.services.interfaces import (
 from youtube_live_recorder.services.storage import check_storage
 from youtube_live_recorder.utils.errors import AppError, ErrorCode
 from youtube_live_recorder.utils.filenames import recording_name
-from youtube_live_recorder.utils.time import from_iso
+from youtube_live_recorder.utils.time import from_iso, utc_now
 
 LOGGER = logging.getLogger(__name__)
+RETRYABLE = {ErrorCode.NETWORK_DISCONNECTED, ErrorCode.RATE_LIMITED}
 
 
 class RecordingManager:
@@ -30,14 +35,25 @@ class RecordingManager:
         metadata: MetadataProvider,
         backend: CaptureBackend,
         finalizer: FFmpegAdapter,
+        *,
+        retry_wait=None,
+        jitter=random.uniform,
+        storage_check=check_storage,
+        disk_interval: float = 5,
+        confirmation_seconds: float = 1,
     ) -> None:
         self.repository, self.settings, self.metadata = repository, settings, metadata
         self.backend, self.finalizer = backend, finalizer
+        self.replays = ReplayStore(repository)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recorder")
         self.stop_event = Event()
+        self.stop_reason = ""
         self.future: Future | None = None
         self.lock = Lock()
         self.accepting = True
+        self.retry_wait = retry_wait or (lambda stop, delay: stop.wait(delay))
+        self.jitter, self.storage_check = jitter, storage_check
+        self.disk_interval, self.confirmation_seconds = disk_interval, confirmation_seconds
 
     def start(
         self, broadcast_id: str, mode: RecordingMode = RecordingMode.LIVE
@@ -45,9 +61,9 @@ class RecordingManager:
         with self.lock:
             if not self.accepting:
                 raise AppError(ErrorCode.INVALID_STATE)
-            check_storage(self.settings.save_folder, self.settings.min_free_bytes, create=True)
+            self.storage_check(self.settings.save_folder, self.settings.min_free_bytes, create=True)
             session = self.repository.claim_session(broadcast_id, mode)
-            self.stop_event = Event()
+            self.stop_event, self.stop_reason = Event(), ""
             try:
                 self.future = self.pool.submit(self._record, session, self.stop_event)
             except RuntimeError:
@@ -57,8 +73,21 @@ class RecordingManager:
                 raise
             return session
 
-    def stop(self) -> None:
-        self.stop_event.set()
+    def stop(self, reason: str = "user") -> None:
+        with self.lock:
+            if not self.stop_event.is_set():
+                self.stop_reason = reason
+                self.stop_event.set()
+
+    def preempt_replay(self) -> bool:
+        with self.lock:
+            active = self.repository.active_session()
+            if active and active.mode == RecordingMode.REPLAY:
+                if not self.stop_event.is_set():
+                    self.stop_reason = "preempted"
+                    self.stop_event.set()
+                return True
+            return False
 
     def shutdown(self) -> None:
         self.stop_accepting()
@@ -67,127 +96,250 @@ class RecordingManager:
     def stop_accepting(self) -> None:
         with self.lock:
             self.accepting = False
-            self.stop_event.set()
+            if not self.stop_event.is_set():
+                self.stop_reason = "shutdown"
+                self.stop_event.set()
+
+    def _disk_watch(self, stop: Event, done: Event) -> None:
+        while not done.wait(self.disk_interval):
+            try:
+                self.storage_check(self.settings.save_folder, self.settings.min_free_bytes)
+            except AppError as error:
+                with self.lock:
+                    if not stop.is_set():
+                        self.stop_reason = error.code
+                        stop.set()
+                return
+
+    def _ended(self, url: str, stop: Event) -> bool:
+        for attempt in range(2):
+            if stop.is_set() or (attempt and stop.wait(self.confirmation_seconds)):
+                return False
+            if self.metadata.fetch(url).state not in {LiveState.WAS_LIVE, LiveState.POST_LIVE}:
+                return False
+        return True
 
     def _record(self, session: RecordingSession, stop: Event) -> None:
         item = self.repository.get_broadcast(session.broadcast_id)
         work = self.settings.save_folder / ".ylr-work" / session.id
-        from_start = session.mode == RecordingMode.LIVE
-        self.repository.set_session_state(
-            session.id,
-            S.RUNNING,
-            work_directory=str(work),
-            from_start=from_start,
-            note="처음부터 저장 요청 · 전체 구간 확보는 보장하지 않습니다."
-            if from_start
-            else "다시보기 다운로드",
+        resumed = session.mode == RecordingMode.LIVE and any(
+            old.id != session.id
+            and old.broadcast_id == session.broadcast_id
+            and old.mode == RecordingMode.LIVE
+            for old in self.repository.list_sessions()
         )
-        segment = self.repository.add_segment(session.id, 0, str(work))
-        inspection = None
-
-        def quality(height: int) -> None:
-            self.repository.record_actual_quality(session.id, height)
-
+        from_start = session.mode == RecordingMode.LIVE and not resumed
+        done = Event()
+        monitor = Thread(target=self._disk_watch, args=(stop, done), name="disk-watch", daemon=True)
+        saved = []
+        reason, last_error = "", None
+        ended, gap, failed_piece, user_stopped = False, resumed, False, False
+        retry, index = 0, 0
+        timestamp = (
+            item.actual_start_at
+            or item.scheduled_start_at
+            or item.first_detected_at
+            or session.started_at
+        )
+        name = recording_name(
+            item.title or "방송",
+            from_iso(timestamp),
+            item.custom_filename,
+            replay=session.mode == RecordingMode.REPLAY,
+        )
         try:
-            result = self.backend.capture(
-                CaptureRequest(
-                    item.original_url, item.preferred_quality, work, from_start, quality
-                ),
-                stop,
+            self.repository.set_session_state(
+                session.id,
+                S.RUNNING,
+                work_directory=str(work),
+                from_start=from_start,
+                note="이전 녹화 중단 이후 구간입니다. 기존 부분 파일은 유지됩니다."
+                if resumed
+                else "처음부터 저장 요청 · 전체 구간 확보는 보장하지 않습니다."
+                if from_start
+                else "다시보기 다운로드",
             )
-            edge_fallback = False
-            if (
-                from_start
-                and not stop.is_set()
-                and result.error_code in {ErrorCode.DVR_UNAVAILABLE, ErrorCode.FORMAT_UNAVAILABLE}
-                and not any(path.exists() and path.stat().st_size for path in result.files)
-            ):
-                self.repository.finish_segment(segment, None)
-                edge_work = work / "live-edge"
-                segment = self.repository.add_segment(session.id, 1, str(edge_work))
+            monitor.start()
+            while True:
+                segment_work = work / f"segment-{index:04d}"
+                segment = self.repository.add_segment(session.id, index, str(segment_work))
                 result = self.backend.capture(
                     CaptureRequest(
-                        item.original_url, item.preferred_quality, edge_work, False, quality
+                        item.original_url,
+                        item.preferred_quality,
+                        segment_work,
+                        from_start,
+                        lambda height: self.repository.record_actual_quality(session.id, height),
                     ),
                     stop,
                 )
-                edge_fallback = True
-            self.repository.set_session_state(session.id, S.FINALIZING)
-            self.repository.transition(item.id, B.FINALIZING)
-            timestamp = (
-                item.actual_start_at
-                or item.scheduled_start_at
-                or item.first_detected_at
-                or session.started_at
-            )
-            name = recording_name(
-                item.title or "방송",
-                from_iso(timestamp),
-                item.custom_filename,
-                replay=session.mode == RecordingMode.REPLAY,
-            )
-            inspection = self.finalizer.finalize(result.files, self.settings.save_folder, name)
-            self.repository.finish_segment(segment, inspection)
+                last_error = result.error_code
+                user_stopped = result.stopped_by_user
+                fallback = (
+                    from_start
+                    and not stop.is_set()
+                    and last_error in {ErrorCode.DVR_UNAVAILABLE, ErrorCode.FORMAT_UNAVAILABLE}
+                    and not any(p.exists() and p.stat().st_size for p in result.files)
+                )
+                if fallback:
+                    self.repository.finish_segment(segment, None, "DVR 시작 구간 사용 불가")
+                    from_start, gap, index = False, True, index + 1
+                    continue
+                if not stop.is_set() and not user_stopped:
+                    try:
+                        ended = session.mode == RecordingMode.REPLAY and result.return_code == 0
+                        if session.mode == RecordingMode.LIVE:
+                            ended = self._ended(item.original_url, stop)
+                    except AppError as error:
+                        last_error = error.code
+                        ended = False
+                    if not ended and result.return_code == 0 and not last_error:
+                        last_error = ErrorCode.NETWORK_DISCONNECTED
+                can_retry = (
+                    not stop.is_set()
+                    and not user_stopped
+                    and not ended
+                    and last_error in RETRYABLE
+                    and retry < self.settings.max_reconnect_attempts
+                )
+                self.repository.set_session_state(
+                    session.id, S.RECONNECTING if can_retry else S.FINALIZING
+                )
+                self.repository.transition(item.id, B.RECONNECTING if can_retry else B.FINALIZING)
+                last_valid = False
+                try:
+                    part_name = name if index == 0 else f"{Path(name).stem}_구간{index + 1:02d}.mp4"
+                    inspection = self.finalizer.finalize(
+                        result.files, self.settings.save_folder, part_name
+                    )
+                    saved.append(inspection)
+                    last_valid = True
+                    self.repository.finish_segment(segment, inspection)
+                except AppError as error:
+                    failed_piece = True
+                    self.repository.finish_segment(segment, None, str(error))
+                    reason = str(error)
+                    if error.code in {ErrorCode.DISK_LOW, ErrorCode.WRITE_PERMISSION_DENIED}:
+                        last_error = error.code
+                        can_retry = False
+                    LOGGER.warning("세그먼트 정리 실패: %s", error.code)
+                if not can_retry:
+                    if self.repository.get_session(session.id).status == S.RECONNECTING:
+                        self.repository.set_session_state(session.id, S.FINALIZING)
+                        self.repository.transition(item.id, B.FINALIZING)
+                    break
+                gap = True
+                self.repository.note_coverage(
+                    session.id, "연결이 끊긴 구간이 있습니다. 재개 구간은 별도 파일로 보존합니다."
+                )
+                delay = min(600, 15 * 2**retry)
+                delay += self.jitter(0, delay * 0.1)
+                if self.retry_wait(stop, delay) or stop.is_set():
+                    self.repository.set_session_state(session.id, S.FINALIZING)
+                    self.repository.transition(item.id, B.FINALIZING)
+                    break
+                self.storage_check(self.settings.save_folder, self.settings.min_free_bytes)
+                retry, index = retry + 1, index + 1
+                from_start = False
+                self.repository.set_session_state(session.id, S.RUNNING)
+                self.repository.transition(
+                    item.id,
+                    B.RECORDING if session.mode == RecordingMode.LIVE else B.REPLAY_DOWNLOADING,
+                )
             self.repository.set_session_state(session.id, S.VERIFYING)
             self.repository.transition(item.id, B.VERIFYING)
-            if result.stopped_by_user or stop.is_set():
-                self.repository.finish_session(
-                    session.id,
-                    S.PARTIAL,
-                    B.CANCELLED,
-                    inspection,
-                    "사용자가 중지한 부분 녹화입니다.",
-                )
-                return
-            ended = session.mode == RecordingMode.REPLAY
-            if not ended and result.return_code == 0:
-                # 프로세스 종료만으로 방송 종료를 추정하지 않는다. 두 번 명시적 상태를 확인한다.
-                checks = []
-                for attempt in range(2):
-                    if attempt and stop.wait(1):
-                        break
-                    checks.append(self.metadata.fetch(item.original_url).state)
-                ended = len(checks) == 2 and all(
-                    s in {LiveState.WAS_LIVE, LiveState.POST_LIVE} for s in checks
-                )
-            if result.return_code == 0 and ended and not edge_fallback:
-                self.repository.finish_session(session.id, S.COMPLETE, B.COMPLETED, inspection)
-            elif ended and edge_fallback:
-                self.repository.finish_session(
-                    session.id,
-                    S.PARTIAL,
-                    B.REPLAY_WAIT,
-                    inspection,
-                    "현재 시점부터 저장해 방송 앞부분이 누락될 수 있습니다.",
-                )
-            else:
-                self.repository.finish_session(
-                    session.id,
-                    S.PARTIAL,
+            manual = (stop.is_set() or user_stopped) and self.stop_reason in {"", "user"}
+            if manual:
+                target, reason = B.CANCELLED, "사용자가 중지한 부분 녹화입니다."
+            elif self.stop_reason in {ErrorCode.DISK_LOW, ErrorCode.WRITE_PERMISSION_DENIED}:
+                target, reason = B.ERROR, str(AppError(self.stop_reason))
+                last_error = self.stop_reason
+            elif self.stop_reason == "shutdown":
+                target, reason = (
                     B.ERROR_RETRYABLE,
-                    inspection,
-                    "방송 종료 또는 전체 녹화를 확인하지 못했습니다.",
+                    "프로그램 종료로 중단했습니다. 다음 실행에서 상태를 재확인합니다.",
                 )
+            elif self.stop_reason == "preempted":
+                target, reason = (
+                    B.REPLAY_WAIT,
+                    "라이브 녹화를 우선해 다시보기를 대기 상태로 돌렸습니다.",
+                )
+            elif (
+                session.mode == RecordingMode.REPLAY
+                and ended
+                and result.return_code == 0
+                and last_valid
+            ):
+                target = B.COMPLETED
+            elif ended and result.return_code == 0 and not gap and not failed_piece and saved:
+                target = B.COMPLETED
+            elif last_error in {
+                ErrorCode.STREAM_UNAVAILABLE,
+                ErrorCode.FORMAT_UNAVAILABLE,
+                ErrorCode.DISK_LOW,
+                ErrorCode.WRITE_PERMISSION_DENIED,
+            }:
+                target, reason = B.ERROR, str(AppError(last_error))
+            else:
+                target = B.REPLAY_WAIT
+                reason = (
+                    reason
+                    or "연결 중단 또는 구간 누락으로 부분 저장했습니다. 다시보기를 확인합니다."
+                )
+            final_files = (
+                saved[-1:]
+                if target == B.COMPLETED and session.mode == RecordingMode.REPLAY
+                else saved
+            )
+            self._finish(session, target, final_files, reason)
+            if last_error and target != B.COMPLETED:
+                self.repository.note_error(item.id, last_error)
+            if target in {B.REPLAY_WAIT, B.ERROR_RETRYABLE, B.ERROR}:
+                self.replays.ensure(item.id, reason)
+                if ended:
+                    self.replays.checked(item.id, utc_now(), ended=True)
+                self.replays.defer(item.id, utc_now())
         except Exception as error:
             LOGGER.exception("녹화 세션 처리 실패")
             current = self.repository.get_session(session.id)
             if current.status in {S.COMPLETE, S.PARTIAL, S.FAILED, S.CANCELLED}:
                 return
+            if current.status == S.RUNNING:
+                self.repository.set_session_state(session.id, S.FINALIZING)
             target = (
-                S.PARTIAL
-                if inspection and inspection.valid and current.status != S.RUNNING
-                else S.FAILED
-            )
-            self.repository.finish_segment(segment, inspection)
-            self.repository.finish_session(
-                session.id,
-                target,
                 B.ERROR
-                if isinstance(error, AppError)
-                and error.code in {"DISK_LOW", "WRITE_PERMISSION_DENIED", "STREAM_UNAVAILABLE"}
-                else B.ERROR_RETRYABLE,
-                inspection,
+                if isinstance(error, AppError) and error.code not in RETRYABLE
+                else B.REPLAY_WAIT
+            )
+            reason = (
                 str(error)
                 if isinstance(error, AppError)
-                else "녹화 처리 중 오류가 발생했습니다. 임시 파일은 보존됩니다.",
+                else "녹화 처리 중 오류가 발생했습니다. 임시 파일은 보존됩니다."
             )
+            self._finish(session, target, saved, reason)
+            self.replays.ensure(item.id, reason)
+            self.replays.defer(item.id, utc_now())
+            if isinstance(error, AppError):
+                self.repository.note_error(item.id, error.code)
+        finally:
+            done.set()
+            if monitor.ident is not None:
+                monitor.join(timeout=2)
+
+    def _finish(self, session, target, saved, reason):
+        # 복수 조각은 이어 붙이지 않는다. 대표 경로와 합산 길이/용량을 기록한다.
+        inspection = (
+            replace(
+                saved[0],
+                duration_seconds=sum(p.duration_seconds for p in saved),
+                size_bytes=sum(p.size_bytes for p in saved),
+            )
+            if saved
+            else None
+        )
+        if len(saved) > 1:
+            reason = (
+                f"{len(saved)}개 부분 파일을 저장했습니다. 폴더에서 각 구간을 확인하세요. " + reason
+            )
+        status = S.COMPLETE if target == B.COMPLETED else S.PARTIAL if saved else S.FAILED
+        self.repository.finish_session(session.id, status, target, inspection, reason)

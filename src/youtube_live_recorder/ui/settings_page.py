@@ -40,8 +40,7 @@ class SettingsPage(QWidget):
         content.addWidget(label("자동 감지", "sectionTitle"))
         content.addWidget(
             label(
-                "라이브 확인: 60초 간격\n"
-                "다시보기 자동 저장은 현재 개발 단계에서 아직 지원하지 않습니다.",
+                "라이브 확인: 60초 간격\n다시보기 확인: 30분 간격 · 방송 종료 관찰 후 최대 24시간",
                 wrap=True,
             )
         )
