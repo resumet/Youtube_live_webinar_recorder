@@ -1,11 +1,12 @@
 import functools
+import json
 import os
 import subprocess
 import sys
 import threading
 import time
 from datetime import timedelta
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from youtube_live_recorder.core.recovery_manager import RecoveryManager
 from youtube_live_recorder.core.scheduler import Scheduler
 from youtube_live_recorder.data.db import Database
 from youtube_live_recorder.data.models import BroadcastStatus, Quality, SessionStatus
+from youtube_live_recorder.data.replays import ReplayStore
 from youtube_live_recorder.data.repository import Repository
 from youtube_live_recorder.services.ffmpeg_adapter import FFmpegAdapter
 from youtube_live_recorder.services.ffprobe_adapter import FFprobeAdapter
@@ -23,6 +25,7 @@ from youtube_live_recorder.services.interfaces import BroadcastMetadata, Capture
 from youtube_live_recorder.services.process_runner import ProcessRunner
 from youtube_live_recorder.services.toolchain import Toolchain
 from youtube_live_recorder.services.ytdlp_adapter import YtdlpAdapter
+from youtube_live_recorder.utils.errors import ErrorCode
 from youtube_live_recorder.utils.time import utc_now
 
 
@@ -257,6 +260,125 @@ def test_scheduler_to_real_download_to_verified_database_history(
         assert session.size_bytes > 0 and session.duration_seconds > 0
         assert repository.active_session() is None
         assert sample.exists()
+    finally:
+        manager.shutdown()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+
+
+def test_real_interrupted_http_reconnect_keeps_partial_and_verified_recovered_file(
+    sample, tmp_path, tools, monkeypatch, repository
+):
+    payload = sample.read_bytes()
+    interrupted = threading.Event()
+    interrupted.set()
+    contacts = {"broken": 0, "recovered": 0}
+
+    class InterruptedHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            broken = interrupted.is_set()
+            contacts["broken" if broken else "recovered"] += 1
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                # 본문 길이를 채우기 전에 실제 연결을 닫는다. 다음 캡처부터 전체 본문을 보낸다.
+                self.wfile.write(payload[: len(payload) // 3] if broken else payload)
+                self.wfile.flush()
+            except OSError:
+                pass
+            self.close_connection = True
+
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), InterruptedHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    info = tmp_path / "local-info.json"
+    url = f"http://127.0.0.1:{server.server_port}/stream.mp4"
+    info.write_text(
+        json.dumps(
+            {
+                "id": "Abc_123-xYz",
+                "title": "로컬 연결 복구 시험",
+                "url": url,
+                "webpage_url": url,
+                "extractor": "generic",
+                "extractor_key": "Generic",
+                "ext": "mp4",
+                "protocol": "http",
+                "height": 90,
+                "vcodec": "mpeg4",
+                "acodec": "aac",
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter = YtdlpAdapter(tools)
+    original_args = adapter.capture_args
+    original_capture = adapter.capture
+    results = []
+
+    def local_args(request):
+        # 사이트 조회만 대체한다. 오류 판정·다운로더 재시도·프로세스 실행은 실제 구현을 쓴다.
+        return [*original_args(request)[:-2], "--load-info-json", str(info)]
+
+    def capture(request, stop):
+        if results:
+            interrupted.clear()
+        result = original_capture(request, stop)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(adapter, "capture_args", local_args)
+    monkeypatch.setattr(adapter, "capture", capture)
+
+    class Metadata:
+        def fetch(self, _url):
+            return BroadcastMetadata(
+                "Abc_123-xYz",
+                "연결 복구 시험",
+                "로컬 채널",
+                "",
+                LiveState.WAS_LIVE if len(results) >= 2 else LiveState.LIVE,
+            )
+
+    delays = []
+    finalizer = FFmpegAdapter(tools.ffmpeg, FFprobeAdapter(tools.ffprobe))
+    manager = RecordingManager(
+        repository,
+        Settings(tmp_path / "recordings", min_free_bytes=0, max_reconnect_attempts=1),
+        Metadata(),
+        adapter,
+        finalizer,
+        retry_wait=lambda stop, delay: delays.append(delay) or False,
+        jitter=lambda *_: 0,
+        confirmation_seconds=0,
+    )
+    item = repository.add_broadcast("https://youtu.be/Abc_123-xYz", permission_confirmed=True)
+    repository.transition(item.id, BroadcastStatus.LIVE_DETECTED)
+    try:
+        session = manager.start(item.id)
+        manager.future.result(timeout=45)
+        assert len(results) == 2
+        assert results[0].return_code != 0
+        assert results[0].error_code == ErrorCode.NETWORK_DISCONNECTED
+        assert not results[0].forced and results[1].return_code == 0
+        assert contacts["broken"] >= 4 and contacts["recovered"] >= 1
+        assert delays == [15]
+        assert results[0].files and all(path.is_file() for path in results[0].files)
+        assert any(0 < path.stat().st_size < len(payload) for path in results[0].files)
+        assert set(results[0].files).isdisjoint(results[1].files)
+        saved = repository.get_session(session.id)
+        assert saved.status == SessionStatus.PARTIAL and saved.ffprobe_ok
+        assert finalizer.verifier.inspect(Path(saved.output_path)).valid
+        assert repository.get_broadcast(item.id).status == BroadcastStatus.REPLAY_WAIT
+        assert ReplayStore(repository).get(item.id)["deadline_at"]
+        assert repository.active_session() is None and repository.database.check_integrity()
     finally:
         manager.shutdown()
         server.shutdown()
