@@ -34,8 +34,8 @@ Windows 11에서 개발·검증했다. 네이티브 Qt의 100/125/150/200% 배�
 
 ## 설치 파일과 남은 배포 작업
 
-- 기본 실행 번들: `dist/YouTubeLiveRecorder/`. v0.2 동시 녹화 변경을 반영한다.
-- 설치 파일: `dist/installer/YouTubeLiveRecorder-0.2.0-Setup.exe`.
+- 기본 실행 번들: `dist/YouTubeLiveRecorder/`. v0.2 동시 녹화와 v0.2.1 폴더 열기를 반영한다.
+- 설치 파일: `dist/installer/YouTubeLiveRecorder-0.2.1-Setup.exe`.
 - v0.2의 설치·재설치·제거 시험은 현재 PC의 기존 설치와 실행 중 녹화를 보호하기 위해
   실행하지 않았다. 기존 제품이 없는 Windows 환경에서 후속 확인이 필요하다.
 - 현재 파일의 SHA256은 같은 폴더의 `.exe.sha256` 파일과 대조한다. 후보별 해시는 검증 기록에 남긴다.
