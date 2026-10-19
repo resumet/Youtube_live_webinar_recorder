@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "youtube-live-recorder"
+version = "0.1.0"
+description = "한국어 Windows용 YouTube 라이브 자동 녹화 프로그램"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "PySide6==6.12.0",
+  "yt-dlp[default]==2026.8.19",
+  "tzdata==2026.5",
+]
+
+[project.scripts]
+youtube-live-recorder = "youtube_live_recorder.main:main"
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "pytest-qt==4.5.0", "ruff==0.17.1"]
+build = ["pyinstaller==6.22.3"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/youtube_live_recorder"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "media: FFmpeg와 FFprobe를 사용하는 로컬 영상 통합 테스트",
+  "windows: Windows API 통합 테스트",
+  "live: 녹화 권한을 확인한 실제 YouTube 방송 테스트 (명시적 실행 필요)",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
