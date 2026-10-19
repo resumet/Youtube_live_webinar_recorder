@@ -21,12 +21,103 @@ from youtube_live_recorder.data.replays import ReplayStore
 from youtube_live_recorder.data.repository import Repository
 from youtube_live_recorder.services.ffmpeg_adapter import FFmpegAdapter
 from youtube_live_recorder.services.ffprobe_adapter import FFprobeAdapter
-from youtube_live_recorder.services.interfaces import BroadcastMetadata, CaptureRequest, LiveState
+from youtube_live_recorder.services.interfaces import (
+    BroadcastMetadata,
+    CaptureRequest,
+    CaptureResult,
+    LiveState,
+)
 from youtube_live_recorder.services.process_runner import ProcessRunner
 from youtube_live_recorder.services.toolchain import Toolchain
 from youtube_live_recorder.services.ytdlp_adapter import YtdlpAdapter
 from youtube_live_recorder.utils.errors import ErrorCode
 from youtube_live_recorder.utils.time import utc_now
+
+
+def test_stopping_one_real_capture_leaves_other_process_recording(repository, tmp_path, tools):
+    ready = {f"Test{i:07}": threading.Event() for i in range(2)}
+    results = {}
+
+    class Streams:
+        def fetch(self, url):
+            return BroadcastMetadata(url[-11:], "동시 녹화", "로컬", "", LiveState.LIVE)
+
+        def capture(self, request, stop):
+            key = request.url[-11:]
+            request.work_directory.mkdir(parents=True)
+            source = request.work_directory / "capture.ts"
+
+            def progress(channel, line):
+                if channel == "stdout" and line.startswith("out_time_us="):
+                    value = line.strip().split("=", 1)[1]
+                    if value.isdigit() and int(value) >= 1_000_000:
+                        ready[key].set()
+
+            result = ProcessRunner().run(
+                [
+                    str(tools.ffmpeg),
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-re",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=160x90:rate=5",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440",
+                    "-t",
+                    "60",
+                    "-c:v",
+                    "mpeg4",
+                    "-c:a",
+                    "aac",
+                    "-progress",
+                    "pipe:1",
+                    "-f",
+                    "mpegts",
+                    str(source),
+                ],
+                stop=stop,
+                on_line=progress,
+                timeout=75,
+            )
+            results[key] = result
+            return CaptureResult(result.return_code, (source,), result.stopped, request.from_start)
+
+    streams = Streams()
+    manager = RecordingManager(
+        repository,
+        Settings(tmp_path, min_free_bytes=0),
+        streams,
+        streams,
+        FFmpegAdapter(tools.ffmpeg, FFprobeAdapter(tools.ffprobe)),
+    )
+    items = [
+        repository.add_broadcast(f"https://youtu.be/Test{i:07}", permission_confirmed=True)
+        for i in range(2)
+    ]
+    try:
+        Scheduler(repository, streams, manager).tick(utc_now() + timedelta(seconds=1))
+        assert all(event.wait(15) for event in ready.values())
+        first, second = repository.active_sessions()
+        manager.stop(expected_session_id=first.id)
+        manager.tasks[first.id].future.result(20)
+        assert not manager.tasks[second.id].future.done()
+        assert repository.get_broadcast(second.broadcast_id).status == BroadcastStatus.RECORDING
+        manager.stop(expected_session_id=second.id)
+        manager.tasks[second.id].future.result(20)
+        assert all(result.stopped and not result.forced for result in results.values())
+        assert all(
+            repository.get_broadcast(i.id).status == BroadcastStatus.CANCELLED for i in items
+        )
+        assert all(
+            s.ffprobe_ok and s.status == SessionStatus.PARTIAL for s in repository.list_sessions()
+        )
+    finally:
+        manager.shutdown()
 
 
 def test_crashed_process_reopens_database_and_recovers_real_media(sample, tmp_path, tools):

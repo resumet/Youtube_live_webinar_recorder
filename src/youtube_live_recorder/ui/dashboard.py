@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -11,18 +13,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from youtube_live_recorder.data.models import BroadcastStatus, Quality
+from youtube_live_recorder.data.models import SESSION_LABELS, BroadcastStatus, Quality
 from youtube_live_recorder.services.interfaces import BroadcastMetadata
 from youtube_live_recorder.ui.controller import Snapshot
 from youtube_live_recorder.ui.formatting import duration, local_time, size_label
-from youtube_live_recorder.ui.widgets import card, label
+from youtube_live_recorder.ui.widgets import card, label, populate, selected_id, table
 from youtube_live_recorder.utils.time import from_iso, utc_now
 
 
 class Dashboard(QWidget):
     preview_requested = Signal(str)
     add_requested = Signal(str, object, str, bool)
-    stop_requested = Signal()
+    stop_requested = Signal(str)
     url_changed = Signal()
 
     def __init__(self):
@@ -98,14 +100,12 @@ class Dashboard(QWidget):
         self.permission = QCheckBox("이 콘텐츠를 녹화하고 저장할 권한이 있습니다.")
         form.addWidget(self.permission)
         actions = QHBoxLayout()
-        actions.addWidget(
-            label(
-                "60초마다 확인 · 최대 1개 녹화 · 시작 구간 확보는 방송 조건에 따라 달라집니다.",
-                "muted",
-                wrap=True,
-            ),
-            1,
+        self.recording_hint = label(
+            "60초마다 확인 · 기본 최대 5개 녹화 · 동시 녹화 수는 설정에서 변경할 수 있습니다.",
+            "muted",
+            wrap=True,
         )
+        actions.addWidget(self.recording_hint, 1)
         self.add_button = QPushButton("대기 목록에 등록")
         self.add_button.setObjectName("primary")
         self.add_button.clicked.connect(
@@ -123,12 +123,23 @@ class Dashboard(QWidget):
         frame, progress = card()
         row = QHBoxLayout()
         row.addWidget(label("진행 중인 녹화", "sectionTitle"), 1)
-        self.stop_button = QPushButton("녹화 중지")
+        self.stop_button = QPushButton("선택한 녹화 중지")
         self.stop_button.setObjectName("danger")
         self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self.stop_requested)
+        self.stop_button.clicked.connect(
+            lambda: self.stop_requested.emit(selected_id(self.recordings) or "")
+        )
         row.addWidget(self.stop_button)
         progress.addLayout(row)
+        self.recordings = table(["방송 제목", "상태", "경과", "저장 데이터", "화질"])
+        self.recordings.setObjectName("activeRecordings")
+        self.recordings.setMinimumHeight(160)
+        self.recordings.setMaximumHeight(280)
+        self.recordings.itemSelectionChanged.connect(self._show_selected)
+        self._snapshot = None
+        self._engine_running = False
+        self._stop_pending = set()
+        progress.addWidget(self.recordings)
         self.recording_title = label("등록한 방송의 시작을 기다립니다.", wrap=True)
         self.recording_detail = label(
             "녹화가 시작되면 시간·용량·화질이 표시됩니다.", "muted", wrap=True
@@ -176,33 +187,76 @@ class Dashboard(QWidget):
         else:
             self.thumbnail.setText("썸네일 없음")
 
-    def update_snapshot(self, snapshot: Snapshot, engine_running: bool, stop_pending: bool):
+    def update_snapshot(self, snapshot: Snapshot, engine_running: bool, stop_pending: set[str]):
+        self._snapshot, self._engine_running, self._stop_pending = (
+            snapshot,
+            engine_running,
+            stop_pending,
+        )
         errors = sum(
             item.status
             in {BroadcastStatus.ERROR, BroadcastStatus.ERROR_RETRYABLE, BroadcastStatus.INTERRUPTED}
             for item in snapshot.queue
         )
         self.metrics["status"].setText(
-            "녹화 중"
+            f"녹화 {len(snapshot.active_sessions)}개"
             if snapshot.active and engine_running
             else "감지 중"
             if engine_running
             else "확인 필요"
         )
-        self.metrics["waiting"].setText(f"{len(snapshot.queue)}개")
+        active_ids = {s.broadcast_id for s in snapshot.active_sessions}
+        self.metrics["waiting"].setText(
+            f"{sum(item.id not in active_ids for item in snapshot.queue)}개"
+        )
         self.metrics["errors"].setText(f"{errors}개")
         self.metrics["disk"].setText(
             size_label(snapshot.free_bytes) if snapshot.free_bytes is not None else "확인 필요"
         )
-        active = snapshot.active
-        self.stop_button.setEnabled(bool(active and engine_running and not stop_pending))
-        self.stop_button.setText("파일 정리 중…" if stop_pending and active else "녹화 중지")
+        self.recording_hint.setText(
+            f"60초마다 확인 · 최대 {snapshot.max_concurrent_recordings}개 동시 녹화 · "
+            "시작 구간 확보는 방송 조건에 따라 달라집니다."
+        )
+        titles = {b.id: b.title or b.video_id for b in snapshot.broadcasts}
+        self.recordings.blockSignals(True)
+        populate(
+            self.recordings,
+            [
+                (
+                    s.id,
+                    [
+                        titles.get(s.broadcast_id, "방송 녹화"),
+                        SESSION_LABELS[s.status],
+                        duration((utc_now() - from_iso(s.started_at)).total_seconds()),
+                        size_label(snapshot.session_bytes.get(s.id, 0)),
+                        s.actual_quality or "확인 중",
+                    ],
+                )
+                for s in snapshot.active_sessions
+            ],
+        )
+        if self.recordings.currentRow() < 0 and snapshot.active_sessions:
+            self.recordings.selectRow(0)
+        self.recordings.blockSignals(False)
+        self._show_selected()
+
+    def _show_selected(self):
+        snapshot = self._snapshot
+        if snapshot is None:
+            return
+        active = next(
+            (s for s in snapshot.active_sessions if s.id == selected_id(self.recordings)), None
+        )
+        pending = bool(active and active.id in self._stop_pending)
+        self.stop_button.setEnabled(bool(active and self._engine_running and not pending))
+        self.stop_button.setText("파일 정리 중…" if pending else "선택한 녹화 중지")
         if active:
             item = next((b for b in snapshot.broadcasts if b.id == active.broadcast_id), None)
             self.recording_title.setText(item.title if item and item.title else "방송 녹화")
             elapsed = (utc_now() - from_iso(active.started_at)).total_seconds()
             self.recording_detail.setText(
-                f"경과 {duration(elapsed)}  ·  저장 데이터 {size_label(snapshot.bytes_written)}"
+                f"경과 {duration(elapsed)}  ·  저장 데이터 "
+                f"{size_label(snapshot.session_bytes.get(active.id, snapshot.bytes_written))}"
                 f"  ·  실제 화질 {active.actual_quality or '확인 중'}"
                 + (f"\n{active.coverage_note}" if active.coverage_note else "")
             )
@@ -215,4 +269,9 @@ class Dashboard(QWidget):
             self.recording_detail.setText(
                 "방송 감지는 서비스 응답과 재시도 시간에 따라 지연될 수 있습니다."
             )
-        self.recording_path.setText(f"저장 위치: {snapshot.save_folder}")
+        folder = (
+            Path(active.work_directory).parent.parent
+            if active and active.work_directory
+            else snapshot.save_folder
+        )
+        self.recording_path.setText(f"저장 위치: {folder}")

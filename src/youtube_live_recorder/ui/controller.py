@@ -2,7 +2,7 @@ import logging
 import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -19,13 +19,14 @@ from youtube_live_recorder.data.models import (
     Quality,
     RecordingSession,
 )
+from youtube_live_recorder.limits import DEFAULT_CONCURRENT_RECORDINGS, validate_recording_limit
 from youtube_live_recorder.services.interfaces import BroadcastMetadata
 from youtube_live_recorder.services.storage import check_storage
 from youtube_live_recorder.services.thumbnails import fetch_thumbnail
 from youtube_live_recorder.services.toolchain import Toolchain
 from youtube_live_recorder.services.updates import UpdateError, UpdateService
 from youtube_live_recorder.services.ytdlp_adapter import YtdlpAdapter
-from youtube_live_recorder.utils.errors import AppError, ErrorCode
+from youtube_live_recorder.utils.errors import AppError
 from youtube_live_recorder.utils.time import to_iso, utc_now
 
 LOGGER = logging.getLogger(__name__)
@@ -39,6 +40,12 @@ class Snapshot:
     bytes_written: int
     free_bytes: int | None
     save_folder: Path
+    session_bytes: dict[str, int] = field(default_factory=dict)
+    max_concurrent_recordings: int = DEFAULT_CONCURRENT_RECORDINGS
+
+    @property
+    def active_sessions(self) -> tuple[RecordingSession, ...]:
+        return tuple(s for s in self.sessions if s.status in ACTIVE_SESSIONS)
 
     @property
     def queue(self) -> tuple[Broadcast, ...]:
@@ -182,16 +189,30 @@ class Controller(QObject):
                 engine = self.engine
                 if engine:
                     with engine.recordings.lock:
-                        if self.repository.active_session():
-                            raise AppError(
-                                ErrorCode.INVALID_STATE, "녹화 중에는 저장 위치를 바꿀 수 없습니다."
-                            )
                         self.repository.set_setting("save_folder", str(folder))
-                        engine.recordings.settings = Settings.load(self.repository)
+                        engine.recordings.settings = replace(
+                            engine.recordings.settings, save_folder=folder
+                        )
                 else:
                     self.repository.set_setting("save_folder", str(folder))
 
         self._operation("folder", action)
+
+    def save_concurrency(self, count: int) -> None:
+        def action():
+            validate_recording_limit(count)
+            with self.config_lock:
+                engine = self.engine
+                if engine:
+                    with engine.recordings.lock:
+                        self.repository.set_setting("max_concurrent_recordings", count)
+                        engine.recordings.settings = replace(
+                            engine.recordings.settings, max_concurrent_recordings=count
+                        )
+                else:
+                    self.repository.set_setting("max_concurrent_recordings", count)
+
+        self._operation("concurrency", action)
 
     def stop_recording(self, session_id: str | None = None) -> None:
         if self.engine:
@@ -211,23 +232,37 @@ class Controller(QObject):
             try:
                 broadcasts = tuple(self.repository.list_broadcasts(include_terminal=True))
                 sessions = tuple(self.repository.list_sessions())
-                active = next((s for s in sessions if s.status in ACTIVE_SESSIONS), None)
-                folder = Settings.load(self.repository).save_folder
-                size = 0
-                if active and active.work_directory:
-                    try:
-                        size = sum(
-                            path.stat().st_size
-                            for path in Path(active.work_directory).rglob("*")
-                            if path.is_file()
-                        )
-                    except OSError:
-                        pass
+                active = tuple(s for s in sessions if s.status in ACTIVE_SESSIONS)
+                settings = Settings.load(self.repository)
+                folder = settings.save_folder
+                sizes = {}
+                for session in active:
+                    sizes[session.id] = 0
+                    if session.work_directory:
+                        try:
+                            sizes[session.id] = sum(
+                                path.stat().st_size
+                                for path in Path(session.work_directory).rglob("*")
+                                if path.is_file()
+                            )
+                        except OSError:
+                            pass
                 try:
                     free = shutil.disk_usage(folder if folder.exists() else folder.parent).free
                 except OSError:
                     free = None
-                self.snapshot_ready.emit(Snapshot(broadcasts, sessions, active, size, free, folder))
+                self.snapshot_ready.emit(
+                    Snapshot(
+                        broadcasts,
+                        sessions,
+                        active[0] if active else None,
+                        sum(sizes.values()),
+                        free,
+                        folder,
+                        sizes,
+                        settings.max_concurrent_recordings,
+                    )
+                )
             except Exception:
                 LOGGER.exception("화면 상태 갱신 실패")
             finally:

@@ -80,6 +80,18 @@ STATUS_LABELS = {
     BroadcastStatus.REPLAY_EXPIRED: "다시보기 확인 기한 만료",
 }
 
+SESSION_LABELS = {
+    SessionStatus.CREATED: "녹화 준비",
+    SessionStatus.RUNNING: "녹화 중",
+    SessionStatus.RECONNECTING: "재연결 중",
+    SessionStatus.FINALIZING: "파일 저장 중",
+    SessionStatus.VERIFYING: "파일 검사 중",
+    SessionStatus.COMPLETE: "완료",
+    SessionStatus.PARTIAL: "부분 저장",
+    SessionStatus.FAILED: "실패",
+    SessionStatus.CANCELLED: "취소",
+}
+
 
 @dataclass(frozen=True)
 class Broadcast:

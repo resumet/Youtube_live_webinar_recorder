@@ -9,6 +9,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QPushButton, QSystemTrayIcon
 
 from youtube_live_recorder.bootstrap import bootstrap
+from youtube_live_recorder.config import Settings
 from youtube_live_recorder.data.models import BroadcastStatus as B
 from youtube_live_recorder.data.models import Quality, RecordingMode
 from youtube_live_recorder.data.models import SessionStatus as S
@@ -211,7 +212,7 @@ def test_update_check_download_ui_never_runs_installer_without_click(desktop, qt
     window, controller, context = desktop
     content = b"MZfixture"
     release = Release(
-        "0.2.0", "https://updates.example/Setup.exe", hashlib.sha256(content).hexdigest()
+        "0.3.0", "https://updates.example/Setup.exe", hashlib.sha256(content).hexdigest()
     )
     data = json.dumps(
         {"version": release.version, "download_url": release.download_url, "sha256": release.sha256}
@@ -223,7 +224,7 @@ def test_update_check_download_ui_never_runs_installer_without_click(desktop, qt
     context.repository.set_setting("update_manifest_url", "https://updates.example/release.json")
     with qtbot.waitSignal(controller.update_checked, timeout=5000):
         window.check_update()
-    assert window.release.version == "0.2.0" and window.update_path is None
+    assert window.release.version == "0.3.0" and window.update_path is None
     window.notification_clicked()
     assert window.stack.currentIndex() == 3
     with qtbot.waitSignal(controller.update_downloaded, timeout=5000):
@@ -302,3 +303,62 @@ def test_progress_history_and_notification_state(desktop, tmp_path):
     assert window.history.table.item(0, 2).text() == "부분 저장"
     assert "파일명 날짜" in window.history.table.item(0, 7).text()
     assert "사용자가 중지" in window.history.table.item(0, 7).text()
+
+
+def test_multiple_recordings_select_stop_and_edit_guard(desktop, qtbot, monkeypatch, tmp_path):
+    window, controller, context = desktop
+    repo = context.repository
+    items, sessions = [], []
+    for index in range(5):
+        item = repo.add_broadcast(f"https://youtu.be/Test{index:07}", permission_confirmed=True)
+        repo.transition(item.id, B.LIVE_DETECTED)
+        session = repo.claim_session(item.id, RecordingMode.LIVE, save_folder=tmp_path)
+        items.append(item)
+        sessions.append(session)
+    window.engine_running = True
+    window.on_snapshot(Snapshot(tuple(items), tuple(sessions), sessions[0], 0, None, tmp_path))
+    assert window.dashboard.recordings.rowCount() == 5
+    assert "5개" in window.dashboard.metrics["status"].text()
+    assert "5개" in window.tray.toolTip()
+    requested = []
+    monkeypatch.setattr(controller, "stop_recording", requested.append)
+    monkeypatch.setattr("youtube_live_recorder.ui.main_window.confirm", lambda *_: True)
+    window.dashboard.recordings.selectRow(3)
+    qtbot.mouseClick(window.dashboard.stop_button, Qt.MouseButton.LeftButton)
+    assert requested == [sessions[3].id]
+    assert window.stop_pending == {sessions[3].id}
+    window.dashboard.recordings.selectRow(4)
+    assert window.dashboard.stop_button.isEnabled()
+    window.edit_broadcast(items[4].id)
+    assert "중지한 뒤" in window.banner.text()
+    assert window.settings.choose.isEnabled()
+
+
+def test_live_folder_and_capacity_settings_persist_without_changing_running_session(
+    desktop, qtbot, tmp_path
+):
+    window, controller, context = desktop
+    item = context.repository.add_broadcast(
+        "https://youtu.be/Test0000000", permission_confirmed=True
+    )
+    context.repository.transition(item.id, B.LIVE_DETECTED)
+    session = context.repository.claim_session(item.id, RecordingMode.LIVE, save_folder=tmp_path)
+    recorder = SimpleNamespace(lock=threading.Lock(), settings=Settings(tmp_path))
+    controller.engine = SimpleNamespace(recordings=recorder, stop=lambda: None)
+    new_folder = tmp_path / "설정에서 선택한 저장소"
+    with qtbot.waitSignal(controller.operation_done, timeout=5000) as result:
+        controller.save_folder(new_folder)
+    assert result.args[1] is True
+    assert recorder.settings.save_folder == new_folder
+    assert context.repository.get_session(session.id).work_directory == session.work_directory
+    window.settings.concurrency.setValue(7)
+    # 화면 갱신이 아직 저장하지 않은 입력을 덮어쓰지 않아야 한다.
+    window.settings.sync_limit(5)
+    assert window.settings.concurrency.value() == 7
+    with qtbot.waitSignal(controller.operation_done, timeout=5000) as result:
+        qtbot.mouseClick(window.settings.save_limit, Qt.MouseButton.LeftButton)
+    assert result.args[1] is True
+    assert recorder.settings.max_concurrent_recordings == 7
+    restored = Settings.load(context.repository)
+    assert restored.save_folder == new_folder and restored.max_concurrent_recordings == 7
+    assert len(context.repository.active_sessions()) == 1

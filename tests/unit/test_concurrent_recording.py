@@ -8,11 +8,12 @@ import pytest
 
 from youtube_live_recorder.config import Settings
 from youtube_live_recorder.core.recording_manager import RecordingManager
+from youtube_live_recorder.core.recovery_manager import RecoveryManager
 from youtube_live_recorder.core.scheduler import Scheduler
 from youtube_live_recorder.data.db import Database
 from youtube_live_recorder.data.migrations import MIGRATIONS
 from youtube_live_recorder.data.models import BroadcastStatus as B
-from youtube_live_recorder.data.models import RecordingMode
+from youtube_live_recorder.data.models import RecordingMode, SessionStatus
 from youtube_live_recorder.data.repository import Repository
 from youtube_live_recorder.services.interfaces import (
     BroadcastMetadata,
@@ -20,6 +21,7 @@ from youtube_live_recorder.services.interfaces import (
     LiveState,
     MediaInspection,
 )
+from youtube_live_recorder.services.storage import check_storage
 from youtube_live_recorder.utils.errors import AppError, ErrorCode
 from youtube_live_recorder.utils.time import utc_now
 
@@ -36,6 +38,10 @@ class LocalStreams:
     def __init__(self, count):
         self.entered = {f"Test{index:07}": Event() for index in range(count)}
         self.stops = {}
+        self.verifier = self
+
+    def inspect(self, path):
+        return MediaInspection(path, path.is_file(), 2, 5, "h264", "aac", 720)
 
     def fetch(self, url):
         return BroadcastMetadata(url[-11:], "동시 시험", "채널", "", LiveState.LIVE)
@@ -171,3 +177,64 @@ def test_v3_migration_preserves_existing_data_and_adds_capacity(tmp_path):
     repo.claim_session(second.id, RecordingMode.LIVE)
     assert len(repo.active_sessions()) == 2
     assert database.check_integrity()
+
+
+def test_recovery_restores_all_sessions_in_their_original_folders(repository, tmp_path):
+    sessions = []
+    for index in range(5):
+        item = register(repository, index)
+        repository.transition(item.id, B.LIVE_DETECTED)
+        session = repository.claim_session(
+            item.id, RecordingMode.LIVE, save_folder=tmp_path / str(index)
+        )
+        work = Path(session.work_directory) / "segment-0000"
+        work.mkdir(parents=True)
+        (work / "capture.ts").write_bytes(b"media")
+        repository.set_session_state(session.id, SessionStatus.RUNNING)
+        repository.add_segment(session.id, 0, str(work))
+        sessions.append(session)
+    RecoveryManager(repository, Settings(tmp_path / "new"), LocalStreams(5)).run()
+    assert not repository.active_sessions()
+    for index, session in enumerate(sessions):
+        recovered = repository.get_session(session.id)
+        assert recovered.status == SessionStatus.PARTIAL and recovered.ffprobe_ok
+        assert Path(recovered.output_path).parent == tmp_path / str(index)
+        assert repository.get_broadcast(session.broadcast_id).status == B.ERROR_RETRYABLE
+    assert repository.database.check_integrity()
+
+
+def test_disk_error_stops_only_sessions_using_affected_folder(repository, tmp_path):
+    failed_folder, healthy_folder = tmp_path / "disk-a", tmp_path / "disk-b"
+    fail = Event()
+
+    def storage(folder, minimum, *, create=False):
+        if fail.is_set() and folder == failed_folder:
+            raise AppError(ErrorCode.DISK_LOW)
+        return check_storage(folder, minimum, create=create)
+
+    streams = LocalStreams(2)
+    manager = RecordingManager(
+        repository,
+        Settings(failed_folder, min_free_bytes=0),
+        streams,
+        streams,
+        streams,
+        storage_check=storage,
+        disk_interval=0.02,
+    )
+    try:
+        items = [register(repository, i) for i in range(2)]
+        for item in items:
+            repository.transition(item.id, B.LIVE_DETECTED)
+        first = manager.start(items[0].id)
+        with manager.lock:
+            manager.settings = replace(manager.settings, save_folder=healthy_folder)
+        second = manager.start(items[1].id)
+        assert all(event.wait(3) for event in streams.entered.values())
+        fail.set()
+        manager.tasks[first.id].future.result(5)
+        assert repository.get_broadcast(first.broadcast_id).status == B.ERROR
+        assert not streams.stops[items[1].video_id].is_set()
+        assert repository.get_broadcast(second.broadcast_id).status == B.RECORDING
+    finally:
+        manager.shutdown()

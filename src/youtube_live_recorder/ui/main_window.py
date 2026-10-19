@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
         self.engine_running = False
         self.preview_token = 0
         self.preview_metadata = None
-        self.stop_pending = False
+        self.stop_pending: set[str] = set()
         self.quitting = False
         self.allow_close = False
         self.last_notification_folder = None
@@ -153,6 +153,7 @@ class MainWindow(QMainWindow):
         self.queue.retry_requested.connect(self.controller.retry)
         self.history.open_requested.connect(self.open_recording)
         self.settings.folder_requested.connect(self.controller.save_folder)
+        self.settings.concurrency_requested.connect(self.controller.save_concurrency)
         self.settings.logs_requested.connect(
             lambda: self.open_folder(self.controller.context.paths.logs)
         )
@@ -272,10 +273,17 @@ class MainWindow(QMainWindow):
             "add": "방송을 대기 목록에 등록했습니다.",
             "cancel": "방송 대기를 취소했습니다.",
             "edit": "방송 설정을 변경했습니다.",
-            "folder": "저장 폴더를 변경했습니다.",
+            "folder": "저장 폴더를 변경했습니다. 이후 시작하는 녹화부터 적용됩니다.",
+            "concurrency": "동시 녹화 수를 저장했습니다. 진행 중인 녹화는 계속됩니다.",
             "retry": "방송 상태를 다시 확인합니다.",
             "stop": "녹화 중지를 요청했습니다. 파일을 정리하고 있습니다.",
         }
+        if name == "concurrency":
+            self.settings.save_limit.setEnabled(True)
+            if success:
+                self.settings.limit_dirty = False
+        if name == "stop" and not success:
+            self.stop_pending.clear()
         self.show_message(
             messages.get(name, "작업을 완료했습니다.") if success else message, error=not success
         )
@@ -292,13 +300,12 @@ class MainWindow(QMainWindow):
         if self.quitting:
             return
         self.snapshot = snapshot
-        if not snapshot.active:
-            self.stop_pending = False
+        self.stop_pending.intersection_update(s.id for s in snapshot.active_sessions)
         self.dashboard.update_snapshot(snapshot, self.engine_running, self.stop_pending)
         self.queue.update_items(snapshot.queue)
         self.history.update_snapshot(snapshot)
         self.settings.folder.setText(str(snapshot.save_folder))
-        self.settings.choose.setEnabled(snapshot.active is None)
+        self.settings.sync_limit(snapshot.max_concurrent_recordings)
         errors = any(
             item.status
             in {BroadcastStatus.ERROR, BroadcastStatus.ERROR_RETRYABLE, BroadcastStatus.INTERRUPTED}
@@ -313,7 +320,7 @@ class MainWindow(QMainWindow):
         )
         self.tray.setIcon(status_icon(color))
         tooltip = (
-            "녹화 중"
+            f"{len(snapshot.active_sessions)}개 녹화 중"
             if snapshot.active and self.engine_running
             else "방송 대기"
             if self.engine_running
@@ -357,7 +364,7 @@ class MainWindow(QMainWindow):
         item = self.selected_broadcast(identifier)
         if not item:
             return
-        if self.snapshot.active and self.snapshot.active.broadcast_id == identifier:
+        if any(s.broadcast_id == identifier for s in self.snapshot.active_sessions):
             self.show_message("녹화 중인 방송은 중지한 뒤 수정해 주세요.", error=True)
             return
         dialog = EditDialog(item, self)
@@ -373,16 +380,19 @@ class MainWindow(QMainWindow):
         if confirm(self, "방송 대기 취소", "선택한 방송의 자동 감지를 취소할까요?", "대기 취소"):
             self.controller.cancel(identifier)
 
-    @Slot()
-    def stop_recording(self):
+    @Slot(str)
+    def stop_recording(self, session_id: str):
+        if not self.snapshot or not any(s.id == session_id for s in self.snapshot.active_sessions):
+            return
         if confirm(
-            self, "녹화 중지", "현재까지 받은 영상을 정리하고 부분 녹화로 저장합니다.", "녹화 중지"
+            self,
+            "녹화 중지",
+            "선택한 방송을 중지하고 현재까지 받은 영상을 부분 녹화로 저장합니다.",
+            "녹화 중지",
         ):
-            self.stop_pending = True
+            self.stop_pending.add(session_id)
             self.dashboard.stop_button.setEnabled(False)
-            self.controller.stop_recording(
-                self.snapshot.active.id if self.snapshot and self.snapshot.active else None
-            )
+            self.controller.stop_recording(session_id)
 
     @Slot(str, bool)
     def open_recording(self, identifier, folder):
