@@ -25,7 +25,7 @@ Inno Setup 7.1.0 x64의 고정 릴리스를 SHA256과 Authenticode 게시자 `Py
 | 폴더형 실행 파일 | `dist/YouTubeLiveRecorder/YouTubeLiveRecorder.exe` |
 | 콘솔 진단/녹화 워커 | `dist/YouTubeLiveRecorder/YouTubeLiveRecorderWorker.exe` |
 | 공유 라이브러리·도구·고지 | `dist/YouTubeLiveRecorder/_internal/` |
-| 설치 파일 (컴파일 성공 시) | `dist/installer/YouTubeLiveRecorder-0.1.0-Setup.exe` |
+| 설치 파일 (컴파일 성공 시) | `dist/installer/YouTubeLiveRecorder-0.2.0-Setup.exe` |
 
 GUI 실행 파일 하나만 복사하면 동작하지 않는다. 폴더 전체를 복사하거나 설치 파일을 사용한다.
 작업 공간의 DB·녹화·로그·테스트 URL은 패키지에 포함하지 않는다.
@@ -40,7 +40,8 @@ GUI 실행 파일 하나만 복사하면 동작하지 않는다. 폴더 전체�
 ```
 
 `verify_package.py`는 시스템 PATH의 Python/FFmpeg/Deno와 `PYTHONPATH`를 제외한 환경에서
-번들 진단, 로컬 미디어 생성/다운로드/MP4 검사, GUI 렌더링·응답·정상 종료를 확인한다.
+번들 진단, 실제 yt-dlp 5개 작업의 로컬 미디어 동시 다운로드/MP4 검사,
+GUI 렌더링·응답·정상 종료를 확인한다.
 호출에 사용한 개발 Python은 검사 진행만 담당한다. 결과와 화면은 `.runtime/package-tests/`에 남는다.
 Qt offscreen 검사와 실제 Windows 트레이/알림 센터 클릭 검증은 별개이다.
 `--qt-platform windows`는 실제 qwindows 플러그인에서도 같은 검사를 수행한다.
@@ -68,9 +69,10 @@ $env:QT_QPA_PLATFORM = 'offscreen'
 .\dist\YouTubeLiveRecorder\YouTubeLiveRecorderWorker.exe --data-dir .runtime\soak-3h soak-test --seconds 10800 --report .runtime\soak-3h\result.json
 ```
 
-FFmpeg가 실시간으로 자체 영상을 생성한다. 실제 엔진·단일 슬롯·디스크 감시·GUI·전원 API와
+FFmpeg가 실시간으로 자체 영상을 생성한다. 실제 엔진의 한 녹화 작업·디스크 감시·GUI·전원 API와
 MP4 마무리·FFprobe·DB 완료 경로를 사용한다. 성공하려면 3시간 경과, 검사 통과,
 정상 종료 및 UI 타이머 간격 5초 미만을 모두 만족해야 한다. 짧은 시험은 3시간 검증을 대신하지 않는다.
+이 명령은 한 영상만 사용하므로 복수 녹화의 장시간 시험을 대신하지 않는다.
 
 ## 설치·업데이트·제거 검증
 
@@ -82,7 +84,8 @@ MP4 마무리·FFprobe·DB 완료 경로를 사용한다. 성공하려면 3시�
 .\.venv\Scripts\python.exe scripts/verify_installer.py
 ```
 
-첫 명령은 앱 실행 중 설치가 차단되는지만 확인한다. 두 번째 명령은 기존 제품 설치가 없을 때만
+두 명령 모두 기존 제품 설치가 없는 환경에서만 실행한다. 첫 명령은 폴더형 앱 실행 중 설치가
+차단되는지만 확인한다. 두 번째 명령은 앱도 실행 중이지 않을 때
 작업 폴더 아래 별도 경로에 설치·재설치·제거하고, 설치본 실행 및 별도 사용자 DB/파일 보존을 검사한다.
 일반 사용자 설치 등록 및 고유한 시작 메뉴 폴더를 생성하므로 환경의 승인 절차가 필요한 경우 이를 따른다.
 실패 시 시험 로그와 설치 경로를 보존한다. 기존 설치를 발견하면 덮어쓰거나 제거하지 않는다.
