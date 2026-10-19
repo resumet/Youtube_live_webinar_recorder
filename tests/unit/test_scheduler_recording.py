@@ -201,6 +201,43 @@ def test_ended_requires_two_confirmations_and_valid_file(repository, tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("scheduled", "actual", "custom", "expected", "basis"),
+    [
+        ("2026-10-18T15:30:00Z", None, "", "2026-10-19_시각 시험.mp4", "예정 시각"),
+        (None, None, "", "2026-10-20_시각 시험.mp4", "첫 방송 감지 시각"),
+        (None, "2026-10-18T14:59:00Z", "", "2026-10-18_시각 시험.mp4", None),
+        (None, None, "사용자 이름", "사용자 이름.mp4", None),
+    ],
+)
+def test_filename_date_basis_persists_with_partial_history(
+    repository, tmp_path, scheduled, actual, custom, expected, basis
+):
+    class UnknownStart:
+        def fetch(self, url):
+            return BroadcastMetadata(
+                "Abc_123-xYz", "시각 시험", "", "", LiveState.LIVE, scheduled, actual
+            )
+
+    item = repository.add_broadcast(
+        "https://youtu.be/Abc_123-xYz", permission_confirmed=True, custom_filename=custom
+    )
+    metadata = UnknownStart()
+    manager = setup_manager(repository, tmp_path, metadata, Capture(user_stop=True))
+    try:
+        Scheduler(repository, metadata, manager).tick(datetime(2026, 10, 20, 0, tzinfo=UTC))
+        wait_manager(manager)
+        session = repository.list_sessions()[0]
+        assert session.output_path == str(tmp_path / expected)
+        assert repository.get_broadcast(item.id).status == B.CANCELLED
+        if basis:
+            assert f"{basis} 기준 추정값" in session.coverage_note
+        else:
+            assert "추정값" not in session.coverage_note
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize(
     "last", [LiveState.UNKNOWN, LiveState.LIVE, AppError(ErrorCode.NETWORK_DISCONNECTED)]
 )
 def test_one_ended_response_or_http_failure_cannot_complete(repository, tmp_path, last):

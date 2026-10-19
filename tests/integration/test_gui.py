@@ -240,6 +240,7 @@ def test_progress_history_and_notification_state(desktop, tmp_path):
         session,
         status=S.RUNNING,
         actual_quality="720p",
+        coverage_note="파일명 날짜는 첫 방송 감지 시각 기준 추정값입니다.",
         started_at=to_iso(utc_now() + timedelta(seconds=1)),
     )
     tracker = NotificationTracker()
@@ -249,6 +250,7 @@ def test_progress_history_and_notification_state(desktop, tmp_path):
     window.engine_running = True
     window.on_snapshot(Snapshot((item,), (session,), session, 1024, 4 * 1024**3, tmp_path))
     assert "720p" in window.dashboard.recording_detail.text()
+    assert "파일명 날짜" in window.dashboard.recording_detail.text()
     assert window.dashboard.stop_button.isEnabled()
     completed = replace(
         session,
@@ -257,6 +259,7 @@ def test_progress_history_and_notification_state(desktop, tmp_path):
         duration_seconds=10,
         size_bytes=1000,
         ffprobe_ok=True,
+        failure_reason="사용자가 중지한 부분 녹화입니다.",
     )
     notices = tracker.update((completed,))
     assert notices[0].title == "부분 녹화 저장 완료" and notices[0].folder == tmp_path
@@ -266,3 +269,5 @@ def test_progress_history_and_notification_state(desktop, tmp_path):
     assert window.history.table.rowCount() == 1
     assert window.queue.table.rowCount() == 0
     assert window.history.table.item(0, 2).text() == "부분 저장"
+    assert "파일명 날짜" in window.history.table.item(0, 7).text()
+    assert "사용자가 중지" in window.history.table.item(0, 7).text()

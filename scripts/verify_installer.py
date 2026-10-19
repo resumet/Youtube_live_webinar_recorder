@@ -150,7 +150,13 @@ def verify_installer(setup: Path, *, guard_only: bool = False) -> Path:
         if not locations or any(path != destination.resolve() for path in locations):
             raise RuntimeError("설치 경로가 바뀌었습니다. 자동 제거를 중단합니다.")
         uninstalled = run(
-            [str(destination / "unins000.exe"), *common, f"/LOG={folder / 'uninstall.log'}"]
+            [
+                str(destination / "unins000.exe"),
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                f"/LOG={folder / 'uninstall.log'}",
+            ]
         )
         result["제거 반환 코드"] = uninstalled.returncode
         deadline = time.monotonic() + 30

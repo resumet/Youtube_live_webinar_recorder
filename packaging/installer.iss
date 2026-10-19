@@ -1,6 +1,8 @@
 #define AppVersion "0.1.0"
 #define AppName "YouTube Live Recorder"
-#define BundleDir "..\dist\YouTubeLiveRecorder"
+#ifndef BundleDir
+  #define BundleDir "..\dist\YouTubeLiveRecorder"
+#endif
 
 [Setup]
 AppId={{35C68D30-7145-4C68-8A1E-37E7E726D209}

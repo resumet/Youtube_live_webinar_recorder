@@ -161,17 +161,30 @@ class RecordingManager:
             item.custom_filename,
             replay=session.mode == RecordingMode.REPLAY,
         )
+        filename_note = ""
+        if not item.actual_start_at and not item.custom_filename.strip():
+            basis = (
+                "예정 시각"
+                if item.scheduled_start_at
+                else "첫 방송 감지 시각"
+                if item.first_detected_at
+                else "녹화 시작 시각"
+            )
+            filename_note = f" 파일명 날짜는 {basis} 기준 추정값입니다."
         try:
             self.repository.set_session_state(
                 session.id,
                 S.RUNNING,
                 work_directory=str(work),
                 from_start=from_start,
-                note="이전 녹화 중단 이후 구간입니다. 기존 부분 파일은 유지됩니다."
-                if resumed
-                else "처음부터 저장 요청 · 전체 구간 확보는 보장하지 않습니다."
-                if from_start
-                else "다시보기 다운로드",
+                note=(
+                    "이전 녹화 중단 이후 구간입니다. 기존 부분 파일은 유지됩니다."
+                    if resumed
+                    else "처음부터 저장 요청 · 전체 구간 확보는 보장하지 않습니다."
+                    if from_start
+                    else "다시보기 다운로드"
+                )
+                + filename_note,
             )
             monitor.start()
             while True:
@@ -244,7 +257,9 @@ class RecordingManager:
                     break
                 gap = True
                 self.repository.note_coverage(
-                    session.id, "연결이 끊긴 구간이 있습니다. 재개 구간은 별도 파일로 보존합니다."
+                    session.id,
+                    "연결이 끊긴 구간이 있습니다. 재개 구간은 별도 파일로 보존합니다."
+                    + filename_note,
                 )
                 delay = min(600, 15 * 2**retry)
                 delay += self.jitter(0, delay * 0.1)

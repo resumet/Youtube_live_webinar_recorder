@@ -204,6 +204,7 @@ class Dashboard(QWidget):
             self.recording_detail.setText(
                 f"경과 {duration(elapsed)}  ·  저장 데이터 {size_label(snapshot.bytes_written)}"
                 f"  ·  실제 화질 {active.actual_quality or '확인 중'}"
+                + (f"\n{active.coverage_note}" if active.coverage_note else "")
             )
         else:
             self.recording_title.setText(

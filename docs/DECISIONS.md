@@ -125,3 +125,10 @@
 
 근거: [PyInstaller windowed 모드](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html),
 [Inno Setup AppMutex](https://jrsoftware.org/ishelp/topic_setup_appmutex.htm).
+
+### 파일명 날짜 안내 보완
+
+실제 방송 시작 시각이 없으면 예정 시각 → 첫 감지 시각 → 녹화 시작 시각 순으로 날짜를 선택한다.
+기본 파일명을 사용하는 세션에는 선택한 기준이 추정값임을 DB 안내에 남기고 진행 화면과 기록에
+함께 표시한다. 사용자 지정 이름이나 실제 시작 시각이 있는 경우 추정 날짜 경고를 추가하지 않는다.
+부분 저장 사유와 날짜/구간 안내는 함께 표시하며, 재연결 후에도 날짜 기준 안내를 보존한다.

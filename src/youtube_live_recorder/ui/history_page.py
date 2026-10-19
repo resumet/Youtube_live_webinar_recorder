@@ -63,7 +63,13 @@ class HistoryPage(QWidget):
                         size_label(session.size_bytes),
                         item.original_url if item else "",
                         session.output_path or "완료 파일 없음",
-                        session.failure_reason or session.coverage_note,
+                        " ".join(
+                            dict.fromkeys(
+                                note
+                                for note in (session.failure_reason, session.coverage_note)
+                                if note
+                            )
+                        ),
                     ],
                 )
             )
