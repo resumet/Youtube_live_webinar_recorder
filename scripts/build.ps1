@@ -19,7 +19,7 @@ if (-not (Test-Path -LiteralPath $compiler)) {
 }
 & $compiler 'packaging/installer.iss'
 if ($LASTEXITCODE -ne 0) { throw 'Setup.exe 생성에 실패했습니다.' }
-$setup = Join-Path $projectRoot 'dist\installer\YouTubeLiveRecorder-0.2.0-Setup.exe'
+$setup = Join-Path $projectRoot 'dist\installer\YouTubeLiveRecorder-0.2.1-Setup.exe'
 $setupHash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath ($setup + '.sha256') -Value ($setupHash + '  ' + [IO.Path]::GetFileName($setup)) -Encoding ascii
 Write-Output $setupHash

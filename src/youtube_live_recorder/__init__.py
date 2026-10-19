@@ -1,3 +1,3 @@
 """YouTube Live Recorder 애플리케이션."""
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

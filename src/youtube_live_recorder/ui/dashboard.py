@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -25,6 +23,8 @@ class Dashboard(QWidget):
     preview_requested = Signal(str)
     add_requested = Signal(str, object, str, bool)
     stop_requested = Signal(str)
+    folder_requested = Signal(str)
+    drive_requested = Signal()
     url_changed = Signal()
 
     def __init__(self):
@@ -148,6 +148,19 @@ class Dashboard(QWidget):
         progress.addWidget(self.recording_title)
         progress.addWidget(self.recording_detail)
         progress.addWidget(self.recording_path)
+        links = QHBoxLayout()
+        self.open_folder_button = QPushButton("저장 폴더 열기")
+        self.open_folder_button.setEnabled(False)
+        self.open_folder_button.clicked.connect(
+            lambda: self.folder_requested.emit(selected_id(self.recordings) or "")
+        )
+        self.open_drive_button = QPushButton("구글 드라이브 열기")
+        self.open_drive_button.setToolTip("지정한 구글 드라이브 폴더를 기본 브라우저로 엽니다.")
+        self.open_drive_button.clicked.connect(self.drive_requested)
+        links.addWidget(self.open_folder_button)
+        links.addWidget(self.open_drive_button)
+        links.addStretch()
+        progress.addLayout(links)
         layout.addWidget(frame)
         layout.addStretch()
 
@@ -269,9 +282,7 @@ class Dashboard(QWidget):
             self.recording_detail.setText(
                 "방송 감지는 서비스 응답과 재시도 시간에 따라 지연될 수 있습니다."
             )
-        folder = (
-            Path(active.work_directory).parent.parent
-            if active and active.work_directory
-            else snapshot.save_folder
-        )
+        folder = snapshot.recording_folder(active.id if active else None)
         self.recording_path.setText(f"저장 위치: {folder}")
+        self.open_folder_button.setEnabled(True)
+        self.open_folder_button.setToolTip(str(folder))

@@ -312,7 +312,9 @@ def test_multiple_recordings_select_stop_and_edit_guard(desktop, qtbot, monkeypa
     for index in range(5):
         item = repo.add_broadcast(f"https://youtu.be/Test{index:07}", permission_confirmed=True)
         repo.transition(item.id, B.LIVE_DETECTED)
-        session = repo.claim_session(item.id, RecordingMode.LIVE, save_folder=tmp_path)
+        folder = tmp_path / f"저장 폴더 {index}"
+        folder.mkdir()
+        session = repo.claim_session(item.id, RecordingMode.LIVE, save_folder=folder)
         items.append(item)
         sessions.append(session)
     window.engine_running = True
@@ -329,6 +331,21 @@ def test_multiple_recordings_select_stop_and_edit_guard(desktop, qtbot, monkeypa
     assert window.stop_pending == {sessions[3].id}
     window.dashboard.recordings.selectRow(4)
     assert window.dashboard.stop_button.isEnabled()
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+    for index in (4, 1):
+        window.dashboard.recordings.selectRow(index)
+        qtbot.mouseClick(window.dashboard.open_folder_button, Qt.MouseButton.LeftButton)
+        actual = tmp_path / f"저장 폴더 {index}"
+        assert opened[-1] == QUrl.fromLocalFile(str(actual))
+        assert str(actual) in window.dashboard.recording_path.text()
+    qtbot.mouseClick(window.dashboard.open_drive_button, Qt.MouseButton.LeftButton)
+    assert opened[-1].toString() == (
+        "https://drive.google.com/drive/folders/1R0hzzsDs0M7SOW6vOfe4ayZ353TRcE93?usp=sharing"
+    )
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda _: False)
+    qtbot.mouseClick(window.dashboard.open_drive_button, Qt.MouseButton.LeftButton)
+    assert "기본 브라우저 설정" in window.banner.text()
     window.edit_broadcast(items[4].id)
     assert "중지한 뒤" in window.banner.text()
     assert window.settings.choose.isEnabled()

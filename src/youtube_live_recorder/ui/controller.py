@@ -47,6 +47,14 @@ class Snapshot:
     def active_sessions(self) -> tuple[RecordingSession, ...]:
         return tuple(s for s in self.sessions if s.status in ACTIVE_SESSIONS)
 
+    def recording_folder(self, session_id: str | None) -> Path:
+        session = next((s for s in self.sessions if s.id == session_id), None)
+        if session and session.output_path:
+            return Path(session.output_path).parent
+        if session and session.work_directory:
+            return Path(session.work_directory).parent.parent
+        return self.save_folder
+
     @property
     def queue(self) -> tuple[Broadcast, ...]:
         return tuple(item for item in self.broadcasts if item.status not in TERMINAL_BROADCASTS)

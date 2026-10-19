@@ -36,6 +36,10 @@ from youtube_live_recorder.utils.errors import MESSAGES, AppError
 from youtube_live_recorder.utils.time import from_iso, utc_now
 from youtube_live_recorder.utils.urls import parse_video_url
 
+GOOGLE_DRIVE_FOLDER_URL = (
+    "https://drive.google.com/drive/folders/1R0hzzsDs0M7SOW6vOfe4ayZ353TRcE93?usp=sharing"
+)
+
 
 class MainWindow(QMainWindow):
     def __init__(self, controller: Controller, *, auto_start: bool = True):
@@ -148,6 +152,8 @@ class MainWindow(QMainWindow):
         self.dashboard.url_changed.connect(self.invalidate_preview)
         self.dashboard.add_requested.connect(self.add_broadcast)
         self.dashboard.stop_requested.connect(self.stop_recording)
+        self.dashboard.folder_requested.connect(self.open_active_recording_folder)
+        self.dashboard.drive_requested.connect(self.open_google_drive)
         self.queue.edit_requested.connect(self.edit_broadcast)
         self.queue.cancel_requested.connect(self.cancel_broadcast)
         self.queue.retry_requested.connect(self.controller.retry)
@@ -413,6 +419,18 @@ class MainWindow(QMainWindow):
         elif path.suffix.lower() == ".mp4":
             if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
                 self.show_message("파일을 열 수 없습니다. 저장 위치를 확인해 주세요.", error=True)
+
+    @Slot(str)
+    def open_active_recording_folder(self, identifier: str):
+        if self.snapshot:
+            self.open_folder(self.snapshot.recording_folder(identifier))
+
+    @Slot()
+    def open_google_drive(self):
+        if not QDesktopServices.openUrl(QUrl(GOOGLE_DRIVE_FOLDER_URL)):
+            self.show_message(
+                "구글 드라이브를 열 수 없습니다. 기본 브라우저 설정을 확인해 주세요.", error=True
+            )
 
     def open_folder(self, path: Path):
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
