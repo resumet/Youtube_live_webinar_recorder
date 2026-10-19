@@ -4,14 +4,23 @@ Windows 10/11에서 허가받은 YouTube 라이브를 자동 감지하고 MP4로
 원격 저장소 이름은 `WebinarAutoRecorder`이며 제품 이름은 **YouTube Live Recorder**입니다.
 
 한국어 GUI에서 자동 감지·녹화·수동 중지, 재연결·충돌 후 파일 복구·다시보기 저장과
-기록 확인을 실행할 수 있습니다. **5단계 패키징 검증 중**이며 Python 없이 실행하는 Windows
-폴더형 빌드와 승인형 업데이트 기능을 구현했고 Setup.exe를 생성했습니다.
-설치·재설치·제거와 실제 3시간 시험은 아직 진행 중입니다.
-최신 실행 증거는 [검증 기록](docs/VALIDATION.md)을 확인하세요.
+기록 확인을 실행할 수 있습니다. Python 없이 실행하는 Windows 폴더형 빌드와
+승인형 업데이트 기능을 구현했고 **v0.1.0 Setup.exe**를 생성했습니다.
+Windows 11에서 설치·재설치·제거와 데이터 보존, 실제 경과 3시간의 로컬 생성 스트림 시험을
+통과했습니다. 전체 자동화 테스트는 **160개 통과**했습니다.
+실행 증거는 [검증 기록](docs/VALIDATION.md), 미확인 항목은 [수용 기준 점검표](docs/ACCEPTANCE.md)를 확인하세요.
 실제 Windows 트레이·알림을 확인하는 방법은 [수동 확인 안내](docs/MANUAL_TESTS.md)에 있습니다.
 
 ## 빌드된 프로그램 실행
 
+설치하려면 다음 파일을 실행하고 설치 후 시작 메뉴에서 **YouTube Live Recorder**를 엽니다.
+설치 파일의 SHA256은 같은 폴더의 `.exe.sha256` 파일과 대조할 수 있습니다.
+
+```powershell
+.\dist\installer\YouTubeLiveRecorder-0.1.0-Setup.exe
+```
+
+설치 없이 폴더형 프로그램으로 실행할 수도 있습니다.
 `dist/YouTubeLiveRecorder/` 폴더 전체를 유지한 채 `YouTubeLiveRecorder.exe`를 실행합니다.
 `_internal`과 `YouTubeLiveRecorderWorker.exe`도 함께 필요합니다. 이 빌드는 FFmpeg/FFprobe,
 Deno, Python, Qt를 포함합니다. 개발용 Python이나 별도 FFmpeg 설치는 필요하지 않습니다.
