@@ -44,6 +44,7 @@ GUI 실행 파일 하나만 복사하면 동작하지 않는다. 폴더 전체�
 호출에 사용한 개발 Python은 검사 진행만 담당한다. 결과와 화면은 `.runtime/package-tests/`에 남는다.
 Qt offscreen 검사와 실제 Windows 트레이/알림 센터 클릭 검증은 별개이다.
 `--qt-platform windows`는 실제 qwindows 플러그인에서도 같은 검사를 수행한다.
+외부 방송 없이 트레이/알림 클릭을 직접 확인하는 절차는 [Windows 수동 확인](MANUAL_TESTS.md)에 있다.
 
 화면 크기와 배율 회귀는 다음 명령으로 확인한다.
 
