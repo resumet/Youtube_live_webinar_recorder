@@ -482,3 +482,35 @@ def test_archive_validation_and_selected_download_actions(desktop, qtbot, monkey
     monkeypatch.setattr("youtube_live_recorder.ui.main_window.confirm", lambda *_: True)
     qtbot.mouseClick(page.cancel_button, Qt.MouseButton.LeftButton)
     assert stopped == [session.id] and not page.cancel_button.isEnabled()
+
+
+def test_registration_during_refresh_requests_a_fresh_snapshot(desktop, qtbot, monkeypatch):
+    window, controller, context = desktop
+    entered, release = threading.Event(), threading.Event()
+    original_list = context.repository.list_broadcasts
+
+    def slow_snapshot(*args, **kwargs):
+        result = original_list(*args, **kwargs)
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        return result
+
+    class Metadata:
+        def fetch(self, url):
+            return BroadcastMetadata(url[-11:], "갱신 도중 등록", "채널", "", LiveState.WAS_LIVE)
+
+    controller.metadata = Metadata()
+    monkeypatch.setattr(context.repository, "list_broadcasts", slow_snapshot)
+    try:
+        controller.refresh()
+        qtbot.waitUntil(entered.is_set, timeout=1000)
+        with qtbot.waitSignal(controller.operation_done, timeout=5000):
+            controller.download_archive("https://youtu.be/Abc_123-xYz", Quality.P720, "", True)
+        assert controller.refresh_dirty
+        release.set()
+        # 정기 타이머 없이도 겹친 갱신 요청을 보존해 최신 목록을 표시해야 한다.
+        qtbot.waitUntil(lambda: window.archives.table.rowCount() == 1, timeout=5000)
+        assert window.archives.table.item(0, 0).text() == "갱신 도중 등록"
+    finally:
+        release.set()

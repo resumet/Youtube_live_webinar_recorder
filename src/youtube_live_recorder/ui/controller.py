@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 
 from youtube_live_recorder import __version__
 from youtube_live_recorder.bootstrap import ApplicationContext
@@ -62,6 +62,7 @@ class Snapshot:
 
 
 class Controller(QObject):
+    _refresh_requested = Signal()
     snapshot_ready = Signal(object)
     preview_ready = Signal(int, object, bytes, str)
     operation_done = Signal(str, bool, str)
@@ -83,6 +84,8 @@ class Controller(QObject):
         self.config_lock = threading.Lock()
         self.refresh_lock = threading.Lock()
         self.refresh_pending = False
+        self.refresh_dirty = False
+        self._refresh_requested.connect(self.refresh, Qt.ConnectionType.QueuedConnection)
         self.closing = threading.Event()
         self.updates = UpdateService(context.paths.root / "updates")
 
@@ -246,6 +249,7 @@ class Controller(QObject):
             return
         with self.refresh_lock:
             if self.refresh_pending:
+                self.refresh_dirty = True
                 return
             self.refresh_pending = True
 
@@ -289,6 +293,9 @@ class Controller(QObject):
             finally:
                 with self.refresh_lock:
                     self.refresh_pending = False
+                    again, self.refresh_dirty = self.refresh_dirty, False
+                if again:
+                    self._refresh_requested.emit()
 
         self.pool.submit(run)
 
