@@ -1,4 +1,5 @@
 import threading
+import time
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
@@ -13,7 +14,8 @@ from youtube_live_recorder.config import Settings
 from youtube_live_recorder.data.models import BroadcastStatus as B
 from youtube_live_recorder.data.models import Quality, RecordingMode
 from youtube_live_recorder.data.models import SessionStatus as S
-from youtube_live_recorder.services.interfaces import BroadcastMetadata, LiveState
+from youtube_live_recorder.services.download_progress import DownloadProgress
+from youtube_live_recorder.services.interfaces import BroadcastMetadata, LiveState, MediaInspection
 from youtube_live_recorder.services.updates import Release, UpdateService
 from youtube_live_recorder.ui.controller import Controller, Snapshot
 from youtube_live_recorder.ui.main_window import MainWindow
@@ -148,6 +150,9 @@ def test_stop_request_does_not_block_ui_while_engine_lock_is_busy(desktop, qtbot
     entered = threading.Event()
 
     class BusyRecorder:
+        def progress_snapshot(self):
+            return {}
+
         def stop(self, *, expected_session_id=None):
             assert expected_session_id == "current-session"
             entered.set()
@@ -362,7 +367,9 @@ def test_live_folder_and_capacity_settings_persist_without_changing_running_sess
     )
     context.repository.transition(item.id, B.LIVE_DETECTED)
     session = context.repository.claim_session(item.id, RecordingMode.LIVE, save_folder=tmp_path)
-    recorder = SimpleNamespace(lock=threading.Lock(), settings=Settings(tmp_path))
+    recorder = SimpleNamespace(
+        lock=threading.Lock(), settings=Settings(tmp_path), progress_snapshot=lambda: {}
+    )
     controller.engine = SimpleNamespace(recordings=recorder, stop=lambda: None)
     new_folder = tmp_path / "설정에서 선택한 저장소"
     with qtbot.waitSignal(controller.operation_done, timeout=5000) as result:
@@ -482,6 +489,72 @@ def test_archive_validation_and_selected_download_actions(desktop, qtbot, monkey
     monkeypatch.setattr("youtube_live_recorder.ui.main_window.confirm", lambda *_: True)
     qtbot.mouseClick(page.cancel_button, Qt.MouseButton.LeftButton)
     assert stopped == [session.id] and not page.cancel_button.isEnabled()
+
+
+def test_archive_progress_survives_refresh_and_distinguishes_transfer_from_verified_completion(
+    desktop,
+    qtbot,
+    tmp_path,
+):
+    window, controller, context = desktop
+    repo = context.repository
+    item = repo.add_broadcast(
+        "https://youtu.be/Abc_123-xYz",
+        permission_confirmed=True,
+        archive_metadata=BroadcastMetadata(
+            "Abc_123-xYz", "진행률 확인", "채널", "", LiveState.WAS_LIVE
+        ),
+    )
+    session = repo.claim_session(item.id, RecordingMode.REPLAY, save_folder=tmp_path)
+    repo.set_session_state(session.id, S.RUNNING)
+    progress = DownloadProgress(1024, 4096, 25, 1024, 3, True, False, time.monotonic())
+    controller.engine = SimpleNamespace(
+        recordings=SimpleNamespace(progress_snapshot=lambda: {session.id: progress}),
+        stop=lambda: None,
+    )
+    window.select_page(2)
+    page = window.archives
+
+    def refresh():
+        with qtbot.waitSignal(controller.snapshot_ready, timeout=5000):
+            controller.refresh()
+
+    refresh()
+    assert page.table.item(0, 1).text() == "25.0%"
+    assert page.table.item(0, 3).text() == "1.0 KB / 약 4.0 KB"
+    assert page.table.item(0, 4).text() == "약 00:00:03"
+    assert page.progress.value() == 250 and "1.0 KB/초" in page.transfer_summary.text()
+    progress = replace(progress, updated_at=time.monotonic() - 20)
+    refresh()
+    assert page.table.item(0, 4).text() == "재계산 중"
+    assert "속도: —" in page.transfer_summary.text()
+    progress = replace(
+        progress, total_bytes=None, percent=None, eta_seconds=None, updated_at=time.monotonic()
+    )
+    refresh()
+    assert page.table.item(0, 1).text() == "계산 중"
+    assert page.progress.value() == 0
+    progress = replace(
+        progress, downloaded_bytes=4096, total_bytes=4096, percent=100, transfer_finished=True
+    )
+    repo.set_session_state(session.id, S.FINALIZING)
+    repo.transition(item.id, B.FINALIZING)
+    refresh()
+    assert page.table.item(0, 4).text() == "파일 정리 중"
+    assert page.cancel_button.isEnabled()
+    repo.set_session_state(session.id, S.VERIFYING)
+    repo.transition(item.id, B.VERIFYING)
+    refresh()
+    assert page.table.item(0, 4).text() == "파일 검사 중"
+    repo.finish_session(
+        session.id,
+        S.COMPLETE,
+        B.COMPLETED,
+        MediaInspection(tmp_path / "complete.mp4", True, 10, 4200, "h264", "aac", 720),
+    )
+    refresh()
+    assert page.table.item(0, 4).text() == "완료"
+    assert page.progress.value() == 1000 and not page.cancel_button.isEnabled()
 
 
 def test_registration_during_refresh_requests_a_fresh_snapshot(desktop, qtbot, monkeypatch):

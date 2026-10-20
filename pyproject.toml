@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "youtube-live-recorder"
-version = "0.3.0"
+version = "0.3.1"
 description = "한국어 Windows용 YouTube 라이브 자동 녹화 프로그램"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"

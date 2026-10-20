@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -14,7 +15,7 @@ from youtube_live_recorder.data.models import STATUS_LABELS, Quality
 from youtube_live_recorder.data.models import BroadcastStatus as B
 from youtube_live_recorder.services.interfaces import LiveState
 from youtube_live_recorder.ui.controller import Snapshot
-from youtube_live_recorder.ui.formatting import size_label
+from youtube_live_recorder.ui.download_progress import progress_display
 from youtube_live_recorder.ui.widgets import card, label, populate, selected_id, table
 from youtube_live_recorder.utils.errors import MESSAGES
 
@@ -82,11 +83,26 @@ class ArchivePage(QWidget):
         layout.addWidget(label("다운로드 목록", "sectionTitle"))
         self.hint = label("", "muted", wrap=True)
         layout.addWidget(self.hint)
-        self.table = table(["영상 제목", "채널", "상태", "받은 데이터", "화질"])
+        self.table = table(["영상 제목", "진행률", "상태", "받음 / 전체 용량", "남은 시간"])
         self.table.setMinimumHeight(180)
         self.table.setMaximumHeight(320)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         layout.addWidget(self.table)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1000)
+        self.progress.setValue(0)
+        self.progress.setFormat("대기 중")
+        layout.addWidget(self.progress)
+        self.transfer_summary = label("", "muted", wrap=True)
+        layout.addWidget(self.transfer_summary)
+        layout.addWidget(
+            label(
+                "용량과 남은 시간은 영상·음성을 합산한 예상값이며 속도에 따라 달라집니다. "
+                "다운로드 후 파일 정리·검사 시간은 별도입니다.",
+                "muted",
+                wrap=True,
+            )
+        )
         self.detail = label("종료된 라이브 URL을 등록해 주세요.", "muted", wrap=True)
         layout.addWidget(self.detail)
         actions = QHBoxLayout()
@@ -133,18 +149,18 @@ class ArchivePage(QWidget):
                 )
             elif item.status == B.REPLAY_DOWNLOADING:
                 state = "다운로드 중"
-            written = snapshot.session_bytes.get(session.id, session.size_bytes) if session else 0
+            metrics = progress_display(
+                item, session, snapshot.download_progress.get(session.id) if session else None
+            )
             rows.append(
                 (
                     item.id,
                     [
                         item.title or "제목 확인 중",
-                        item.channel_name,
+                        metrics.percent,
                         state,
-                        size_label(written),
-                        "최고 화질"
-                        if item.preferred_quality == Quality.BEST
-                        else item.preferred_quality,
+                        metrics.amount,
+                        metrics.remaining,
                     ],
                 )
             )
@@ -181,6 +197,24 @@ class ArchivePage(QWidget):
             note = MESSAGES.get(item.last_error_code, "")
             if session and session.failure_reason:
                 note = session.failure_reason
+            quality = (
+                "최고 화질" if item.preferred_quality == Quality.BEST else item.preferred_quality
+            )
             self.detail.setText(
-                f"{item.original_url}\n저장 폴더: {folder}" + (f"\n{note}" if note else "")
+                f"{item.channel_name} · {quality}"
+                f"\n{item.original_url}\n저장 폴더: {folder}" + (f"\n{note}" if note else "")
+            )
+            metrics = progress_display(
+                item,
+                session,
+                self.snapshot.download_progress.get(session.id) if session else None,
+            )
+            self.progress.setRange(0, 1000)
+            self.progress.setValue(round((metrics.value or 0) * 10))
+            self.progress.setFormat(
+                metrics.percent if metrics.value is not None else metrics.remaining
+            )
+            self.transfer_summary.setText(
+                f"받음 / 전체: {metrics.amount} · 속도: {metrics.speed} · "
+                f"남은 시간: {metrics.remaining}"
             )

@@ -21,6 +21,7 @@ from youtube_live_recorder.data.models import (
     RecordingSession,
 )
 from youtube_live_recorder.limits import DEFAULT_CONCURRENT_RECORDINGS, validate_recording_limit
+from youtube_live_recorder.services.download_progress import DownloadProgress
 from youtube_live_recorder.services.interfaces import BroadcastMetadata
 from youtube_live_recorder.services.storage import check_storage
 from youtube_live_recorder.services.thumbnails import fetch_thumbnail
@@ -43,6 +44,7 @@ class Snapshot:
     save_folder: Path
     session_bytes: dict[str, int] = field(default_factory=dict)
     max_concurrent_recordings: int = DEFAULT_CONCURRENT_RECORDINGS
+    download_progress: dict[str, DownloadProgress] = field(default_factory=dict)
 
     @property
     def active_sessions(self) -> tuple[RecordingSession, ...]:
@@ -286,6 +288,7 @@ class Controller(QObject):
                         folder,
                         sizes,
                         settings.max_concurrent_recordings,
+                        self.engine.recordings.progress_snapshot() if self.engine else {},
                     )
                 )
             except Exception:
