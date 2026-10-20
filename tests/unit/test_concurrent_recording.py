@@ -157,20 +157,29 @@ def test_corrupt_recording_limit_recovers_default(repository, value):
     assert repository.get_setting("max_concurrent_recordings") == 5
 
 
-def test_v3_migration_preserves_existing_data_and_adds_capacity(tmp_path):
+@pytest.mark.parametrize("old_version", [3, 4])
+def test_migration_preserves_existing_data_and_adds_capacity(tmp_path, old_version):
     database = Database(tmp_path / "old.db")
     with database.transaction() as connection:
-        for version in range(1, 4):
+        for version in range(1, old_version + 1):
             for statement in MIGRATIONS[version]:
                 connection.execute(statement)
-        connection.execute("PRAGMA user_version=3")
+        connection.execute(f"PRAGMA user_version={old_version}")
+        connection.execute(
+            "INSERT INTO broadcasts "
+            "(id,video_id,original_url,registered_at,status,preferred_quality,"
+            "custom_filename,permission_confirmed,updated_at) "
+            "VALUES ('legacy','Test0000000','https://youtu.be/Test0000000',"
+            "'2026-10-19T00:00:00+00:00','LIVE_DETECTED','720p','기존 영상',1,"
+            "'2026-10-19T00:00:00+00:00')"
+        )
     repo = Repository(database)
     repo.set_setting("save_folder", str(tmp_path))
-    first = register(repo, 0)
-    repo.transition(first.id, B.LIVE_DETECTED)
-    previous = repo.claim_session(first.id, RecordingMode.LIVE, save_folder=tmp_path)
+    previous = repo.claim_session("legacy", RecordingMode.LIVE, save_folder=tmp_path)
     database.initialize()
     assert repo.get_session(previous.id) == previous
+    assert repo.get_broadcast("legacy").custom_filename == "기존 영상"
+    assert not repo.get_broadcast("legacy").archive_download
     assert Settings.load(repo).save_folder == tmp_path
     second = register(repo, 1)
     repo.transition(second.id, B.LIVE_DETECTED)

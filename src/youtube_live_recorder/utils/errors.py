@@ -10,6 +10,7 @@ class ErrorCode(StrEnum):
     STREAM_NOT_LIVE = "STREAM_NOT_LIVE"
     STREAM_UNAVAILABLE = "STREAM_UNAVAILABLE"
     STREAM_ENDED = "STREAM_ENDED"
+    ENDED_LIVE_REQUIRED = "ENDED_LIVE_REQUIRED"
     BUSY_SINGLE_SLOT = "BUSY_SINGLE_SLOT"
     RECORDING_LIMIT = "RECORDING_LIMIT"
     DISK_LOW = "DISK_LOW"
@@ -36,6 +37,10 @@ MESSAGES = {
         "방송을 볼 수 없거나 접근할 수 없습니다. 제한을 우회하지 않습니다."
     ),
     ErrorCode.STREAM_ENDED: "방송이 종료되었습니다.",
+    ErrorCode.ENDED_LIVE_REQUIRED: (
+        "종료된 라이브 방송의 URL을 입력해 주세요. "
+        "진행 중이거나 예정된 방송은 대시보드에서 등록하세요."
+    ),
     ErrorCode.BUSY_SINGLE_SLOT: "다른 방송을 녹화하거나 저장하고 있습니다.",
     ErrorCode.RECORDING_LIMIT: "동시 녹화 상한에 도달했습니다. 자리가 나면 다시 확인합니다.",
     ErrorCode.DISK_LOW: "저장 공간이 부족합니다. 공간을 확보해 주세요.",

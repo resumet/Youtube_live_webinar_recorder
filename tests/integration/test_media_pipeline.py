@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from youtube_live_recorder.config import Settings
+from youtube_live_recorder.core.archive_downloads import ArchiveDownloads
 from youtube_live_recorder.core.recording_manager import RecordingManager
 from youtube_live_recorder.core.recovery_manager import RecoveryManager
 from youtube_live_recorder.core.scheduler import Scheduler
@@ -292,12 +293,14 @@ def test_ytdlp_local_http_download_and_mp4_pipeline(sample, tmp_path, tools, mon
         thread.join(timeout=5)
 
 
+@pytest.mark.parametrize("archive", [False, True])
 def test_scheduler_to_real_download_to_verified_database_history(
     sample,
     tmp_path,
     tools,
     monkeypatch,
     repository,
+    archive,
 ):
     class QuietHandler(SimpleHTTPRequestHandler):
         def log_message(self, *_):
@@ -314,7 +317,7 @@ def test_scheduler_to_real_download_to_verified_database_history(
                 "엔진 통합 방송",
                 "로컬 채널",
                 "",
-                LiveState.LIVE if self.calls == 1 else LiveState.WAS_LIVE,
+                LiveState.LIVE if self.calls == 1 and not archive else LiveState.WAS_LIVE,
             )
 
     server = ThreadingHTTPServer(
@@ -327,6 +330,10 @@ def test_scheduler_to_real_download_to_verified_database_history(
 
     def local_args(request):
         args = original_args(request)
+        if archive:
+            assert not request.from_start
+            assert "--download-sections" not in args
+            assert "--abort-on-unavailable-fragments" in args
         args[-1] = f"http://127.0.0.1:{server.server_port}/{sample.name}"
         return args
 
@@ -339,8 +346,16 @@ def test_scheduler_to_real_download_to_verified_database_history(
         adapter,
         FFmpegAdapter(tools.ffmpeg, FFprobeAdapter(tools.ffprobe)),
     )
-    item = repository.add_broadcast(
-        "https://youtu.be/Abc_123-xYz", permission_confirmed=True, quality=Quality.BEST
+    item = (
+        ArchiveDownloads(repository, metadata).register(
+            "https://youtube.com/live/Abc_123-xYz?t=60",
+            permission_confirmed=True,
+            quality=Quality.BEST,
+        )
+        if archive
+        else repository.add_broadcast(
+            "https://youtu.be/Abc_123-xYz", permission_confirmed=True, quality=Quality.BEST
+        )
     )
     try:
         Scheduler(repository, metadata, manager).tick(utc_now() + timedelta(seconds=1))
@@ -349,6 +364,10 @@ def test_scheduler_to_real_download_to_verified_database_history(
         assert repository.get_broadcast(item.id).status == BroadcastStatus.COMPLETED
         assert session.status == SessionStatus.COMPLETE and session.ffprobe_ok
         assert session.size_bytes > 0 and session.duration_seconds > 0
+        original = manager.finalizer.verifier.inspect(sample)
+        assert abs(session.duration_seconds - original.duration_seconds) < 0.1
+        if archive:
+            assert session.mode == "REPLAY" and not session.from_start_attempted
         assert repository.active_session() is None
         assert sample.exists()
     finally:

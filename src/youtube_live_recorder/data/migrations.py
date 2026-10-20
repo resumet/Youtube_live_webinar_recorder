@@ -111,6 +111,10 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         """CREATE UNIQUE INDEX active_session_per_broadcast ON recording_sessions(broadcast_id)
            WHERE status IN ('CREATED','RUNNING','RECONNECTING','FINALIZING','VERIFYING')""",
     ),
+    5: (
+        "ALTER TABLE broadcasts ADD COLUMN archive_download INTEGER NOT NULL DEFAULT 0 "
+        "CHECK(archive_download IN (0,1))",
+    ),
 }
 
 SCHEMA_VERSION = max(MIGRATIONS)

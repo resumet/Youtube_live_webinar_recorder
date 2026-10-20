@@ -18,7 +18,7 @@ from youtube_live_recorder.data.models import (
     SessionStatus,
 )
 from youtube_live_recorder.limits import DEFAULT_CONCURRENT_RECORDINGS, validate_recording_limit
-from youtube_live_recorder.services.interfaces import BroadcastMetadata, MediaInspection
+from youtube_live_recorder.services.interfaces import BroadcastMetadata, LiveState, MediaInspection
 from youtube_live_recorder.utils.errors import AppError, ErrorCode
 from youtube_live_recorder.utils.logging import redact
 from youtube_live_recorder.utils.time import to_iso, utc_now
@@ -33,6 +33,7 @@ def _broadcast(row: sqlite3.Row) -> Broadcast:
     values["status"] = BroadcastStatus(values["status"])
     values["preferred_quality"] = Quality(values["preferred_quality"])
     values["permission_confirmed"] = bool(values["permission_confirmed"])
+    values["archive_download"] = bool(values["archive_download"])
     return Broadcast(**values)
 
 
@@ -57,32 +58,62 @@ class Repository:
         permission_confirmed: bool,
         quality: Quality = Quality.P1080,
         custom_filename: str = "",
+        archive_metadata: BroadcastMetadata | None = None,
     ) -> Broadcast:
         parsed = parse_video_url(url)
         quality = Quality(quality)
         if permission_confirmed is not True:
             raise AppError(ErrorCode.PERMISSION_REQUIRED)
+        if archive_metadata:
+            if archive_metadata.video_id != parsed.video_id:
+                raise AppError(ErrorCode.STREAM_UNAVAILABLE)
+            if archive_metadata.state not in {LiveState.WAS_LIVE, LiveState.POST_LIVE}:
+                raise AppError(ErrorCode.ENDED_LIVE_REQUIRED)
         now, identifier = to_iso(utc_now()), str(uuid4())
         try:
             with self.database.transaction() as connection:
                 connection.execute(
                     """INSERT INTO broadcasts
                     (id,video_id,original_url,registered_at,status,preferred_quality,
-                     custom_filename,permission_confirmed,next_check_at,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                     custom_filename,permission_confirmed,next_check_at,updated_at,archive_download)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         identifier,
                         parsed.video_id,
                         parsed.canonical_url,
                         now,
-                        BroadcastStatus.WAITING,
+                        BroadcastStatus.REPLAY_WAIT
+                        if archive_metadata
+                        else BroadcastStatus.WAITING,
                         quality,
                         custom_filename,
                         1,
                         now,
                         now,
+                        int(archive_metadata is not None),
                     ),
                 )
+                if archive_metadata:
+                    # 등록과 다운로드 의도를 같은 트랜잭션으로 보존한다.
+                    connection.execute(
+                        "UPDATE broadcasts SET title=?,channel_name=?,thumbnail_url=?,"
+                        "actual_start_at=?,live_state=?,last_polled_at=? WHERE id=?",
+                        (
+                            archive_metadata.title,
+                            archive_metadata.channel_name,
+                            archive_metadata.thumbnail_url,
+                            archive_metadata.actual_start_at,
+                            archive_metadata.state,
+                            now,
+                            identifier,
+                        ),
+                    )
+                    connection.execute(
+                        "INSERT INTO replay_jobs "
+                        "(id,broadcast_id,status,reason,created_at,next_check_at) "
+                        "VALUES (?,?,'WAITING',?,?,?)",
+                        (str(uuid4()), identifier, "사용자가 요청한 종료영상 다운로드", now, now),
+                    )
         except sqlite3.IntegrityError as exc:
             if "broadcasts.video_id" in str(exc):
                 raise AppError(ErrorCode.DUPLICATE_BROADCAST) from None
@@ -505,7 +536,7 @@ class Repository:
     def retry_broadcast(self, identifier: str) -> None:
         with self.database.transaction() as connection:
             row = connection.execute(
-                "SELECT status FROM broadcasts WHERE id=?", (identifier,)
+                "SELECT status,archive_download FROM broadcasts WHERE id=?", (identifier,)
             ).fetchone()
             if row is None or row[0] not in {"ERROR", "ERROR_RETRYABLE"}:
                 raise AppError(ErrorCode.INVALID_STATE)
@@ -519,7 +550,7 @@ class Repository:
                 "SELECT deadline_at FROM replay_jobs WHERE broadcast_id=?", (identifier,)
             ).fetchone()
             # 종료를 관찰한 다시보기의 기존 기한을 수동 재시도로 연장하지 않는다.
-            target = "REPLAY_WAIT" if job and job[0] else "WAITING"
+            target = "REPLAY_WAIT" if row["archive_download"] or (job and job[0]) else "WAITING"
             now = to_iso(utc_now())
             connection.execute(
                 "UPDATE broadcasts SET status=?,next_check_at=?,poll_failures=0,"

@@ -115,6 +115,7 @@ class Broadcast:
     updated_at: str
     first_detected_at: str | None = None
     live_state: str = "unknown"
+    archive_download: bool = False
 
 
 @dataclass(frozen=True)

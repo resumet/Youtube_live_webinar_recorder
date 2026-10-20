@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from youtube_live_recorder.config import REPLAY_POLL_SECONDS, REPLAY_WINDOW_SECONDS
+from youtube_live_recorder.config import POLL_SECONDS, REPLAY_POLL_SECONDS, REPLAY_WINDOW_SECONDS
 from youtube_live_recorder.data.repository import Repository
 from youtube_live_recorder.utils.time import to_iso, utc_now
 
@@ -28,15 +28,23 @@ class ReplayStore:
         return dict(row) if row else None
 
     def checked(self, broadcast_id: str, now: datetime, *, ended: bool, error: str = "") -> None:
-        deadline = to_iso(now + timedelta(seconds=REPLAY_WINDOW_SECONDS)) if ended else None
         with self.database.transaction() as connection:
+            manual = connection.execute(
+                "SELECT archive_download FROM broadcasts WHERE id=?", (broadcast_id,)
+            ).fetchone()[0]
+            deadline = (
+                to_iso(now + timedelta(seconds=REPLAY_WINDOW_SECONDS))
+                if ended and not manual
+                else None
+            )
+            interval = POLL_SECONDS if manual else REPLAY_POLL_SECONDS
             connection.execute(
                 """UPDATE replay_jobs SET last_attempt_at=?,next_check_at=?,
                 attempts=attempts+1,error_code=?,deadline_at=COALESCE(deadline_at,?)
                 WHERE broadcast_id=?""",
                 (
                     to_iso(now),
-                    to_iso(now + timedelta(seconds=REPLAY_POLL_SECONDS)),
+                    to_iso(now + timedelta(seconds=interval)),
                     error or None,
                     deadline,
                     broadcast_id,
@@ -53,10 +61,14 @@ class ReplayStore:
 
     def defer(self, broadcast_id: str, now: datetime, *, immediate: bool = False) -> None:
         with self.database.transaction() as connection:
+            manual = connection.execute(
+                "SELECT archive_download FROM broadcasts WHERE id=?", (broadcast_id,)
+            ).fetchone()[0]
+            interval = POLL_SECONDS if manual else REPLAY_POLL_SECONDS
             connection.execute(
                 "UPDATE replay_jobs SET status='WAITING',next_check_at=? WHERE broadcast_id=?",
                 (
-                    to_iso(now if immediate else now + timedelta(seconds=REPLAY_POLL_SECONDS)),
+                    to_iso(now if immediate else now + timedelta(seconds=interval)),
                     broadcast_id,
                 ),
             )

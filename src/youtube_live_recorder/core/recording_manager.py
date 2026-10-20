@@ -112,7 +112,11 @@ class RecordingManager:
     def preempt_replay(self) -> bool:
         with self.lock:
             for active in self.repository.active_sessions():
-                if active.mode == RecordingMode.REPLAY and active.id in self.tasks:
+                if (
+                    active.mode == RecordingMode.REPLAY
+                    and active.id in self.tasks
+                    and not self.repository.get_broadcast(active.broadcast_id).archive_download
+                ):
                     self.tasks[active.id].request_stop("preempted")
                     return True
             return False

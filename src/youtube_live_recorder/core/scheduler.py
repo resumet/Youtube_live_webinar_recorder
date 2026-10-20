@@ -39,7 +39,11 @@ class Scheduler:
         for item in self.repository.list_broadcasts():
             if stop is not None and stop.is_set():
                 break
-            if item.status not in {B.WAITING, B.ERROR_RETRYABLE, B.LIVE_DETECTED}:
+            if item.archive_download or item.status not in {
+                B.WAITING,
+                B.ERROR_RETRYABLE,
+                B.LIVE_DETECTED,
+            }:
                 continue
             if item.next_check_at and from_iso(item.next_check_at) > now:
                 continue
