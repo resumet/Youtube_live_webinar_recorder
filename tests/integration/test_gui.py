@@ -44,7 +44,9 @@ def desktop(qtbot, tmp_path):
 
 def test_window_navigation_and_required_permission(desktop, qtbot):
     window, _, context = desktop
-    for index, title in enumerate(("대시보드", "녹화 대기", "녹화 기록", "설정")):
+    for index, title in enumerate(
+        ("대시보드", "녹화 대기", "종료영상 다운로드", "녹화 기록", "설정")
+    ):
         qtbot.mouseClick(window.nav_buttons[index], Qt.MouseButton.LeftButton)
         assert window.page_title.text() == title
     window.select_page(0)
@@ -212,7 +214,7 @@ def test_update_check_download_ui_never_runs_installer_without_click(desktop, qt
     window, controller, context = desktop
     content = b"MZfixture"
     release = Release(
-        "0.3.0", "https://updates.example/Setup.exe", hashlib.sha256(content).hexdigest()
+        "0.4.0", "https://updates.example/Setup.exe", hashlib.sha256(content).hexdigest()
     )
     data = json.dumps(
         {"version": release.version, "download_url": release.download_url, "sha256": release.sha256}
@@ -224,7 +226,7 @@ def test_update_check_download_ui_never_runs_installer_without_click(desktop, qt
     context.repository.set_setting("update_manifest_url", "https://updates.example/release.json")
     with qtbot.waitSignal(controller.update_checked, timeout=5000):
         window.check_update()
-    assert window.release.version == "0.3.0" and window.update_path is None
+    assert window.release.version == "0.4.0" and window.update_path is None
     window.notification_clicked()
     assert window.stack.currentIndex() == 3
     with qtbot.waitSignal(controller.update_downloaded, timeout=5000):
@@ -379,3 +381,104 @@ def test_live_folder_and_capacity_settings_persist_without_changing_running_sess
     restored = Settings.load(context.repository)
     assert restored.save_folder == new_folder and restored.max_concurrent_recordings == 7
     assert len(context.repository.active_sessions()) == 1
+
+
+def test_archive_registration_is_async_and_keeps_separate_queue(desktop, qtbot, monkeypatch):
+    window, controller, context = desktop
+    gate = threading.Event()
+
+    class Metadata:
+        def fetch(self, url):
+            assert gate.wait(5)
+            return BroadcastMetadata(
+                url[-11:], "지난 라이브 전체 영상", "채널", "", LiveState.WAS_LIVE
+            )
+
+    controller.metadata = Metadata()
+    window.select_page(2)
+    page = window.archives
+    page.url.setText("https://youtube.com/live/Abc_123-xYz?t=600")
+    qtbot.mouseClick(page.add_button, Qt.MouseButton.LeftButton)
+    assert "권한" in window.banner.text()
+    page.permission.setChecked(True)
+    page.filename.setText("내 종료 영상")
+    page.quality.setCurrentIndex(0)
+    ticks = []
+    timer = QTimer()
+    timer.timeout.connect(lambda: ticks.append(1))
+    timer.start(10)
+    try:
+        qtbot.mouseClick(page.add_button, Qt.MouseButton.LeftButton)
+        assert not page.add_button.isEnabled()
+        qtbot.waitUntil(lambda: len(ticks) >= 5, timeout=1000)
+        window.select_page(0)
+        assert window.stack.currentIndex() == 0
+        with qtbot.waitSignal(controller.operation_done, timeout=5000) as result:
+            gate.set()
+        assert result.args[:2] == ["archive", True]
+        qtbot.waitUntil(lambda: page.table.rowCount() == 1, timeout=5000)
+        assert window.queue.table.rowCount() == 0
+        item = context.repository.list_broadcasts()[0]
+        assert item.archive_download and item.preferred_quality == Quality.P720
+        assert item.custom_filename == "내 종료 영상"
+        assert page.add_button.isEnabled() and not page.url.text()
+        window.select_page(2)
+        monkeypatch.setattr("youtube_live_recorder.ui.main_window.confirm", lambda *_: True)
+        with qtbot.waitSignal(controller.operation_done, timeout=5000):
+            qtbot.mouseClick(page.cancel_button, Qt.MouseButton.LeftButton)
+        assert context.repository.get_broadcast(item.id).status == B.CANCELLED
+    finally:
+        gate.set()
+        timer.stop()
+
+
+def test_archive_validation_and_selected_download_actions(desktop, qtbot, monkeypatch, tmp_path):
+    window, controller, context = desktop
+
+    class Metadata:
+        state = LiveState.LIVE
+
+        def fetch(self, url):
+            return BroadcastMetadata(url[-11:], "다시보기", "채널", "", self.state)
+
+    metadata = Metadata()
+    controller.metadata = metadata
+    page = window.archives
+    window.select_page(2)
+    page.url.setText("https://youtu.be/Abc_123-xYz")
+    page.permission.setChecked(True)
+    with qtbot.waitSignal(controller.operation_done, timeout=5000) as result:
+        qtbot.mouseClick(page.add_button, Qt.MouseButton.LeftButton)
+    assert result.args[1] is False and "종료된 라이브" in window.banner.text()
+    assert not context.repository.list_broadcasts()
+    assert page.url.text() and page.add_button.isEnabled()
+    metadata.state = LiveState.WAS_LIVE
+    with qtbot.waitSignal(controller.operation_done, timeout=5000):
+        qtbot.mouseClick(page.add_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: page.table.rowCount() == 1, timeout=5000)
+    item = context.repository.list_broadcasts()[0]
+    actual_folder = tmp_path / "기존 저장 폴더"
+    session = context.repository.claim_session(
+        item.id, RecordingMode.REPLAY, save_folder=actual_folder
+    )
+    window.on_snapshot(
+        Snapshot(
+            (context.repository.get_broadcast(item.id),),
+            (session,),
+            session,
+            1234,
+            None,
+            tmp_path / "변경한 설정 폴더",
+            {session.id: 1234},
+        )
+    )
+    assert page.table.item(0, 2).text() == "다운로드 중"
+    assert str(actual_folder) in page.detail.text()
+    opened, stopped = [], []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+    qtbot.mouseClick(page.folder_button, Qt.MouseButton.LeftButton)
+    assert opened == [QUrl.fromLocalFile(str(actual_folder))]
+    monkeypatch.setattr(controller, "stop_recording", stopped.append)
+    monkeypatch.setattr("youtube_live_recorder.ui.main_window.confirm", lambda *_: True)
+    qtbot.mouseClick(page.cancel_button, Qt.MouseButton.LeftButton)
+    assert stopped == [session.id] and not page.cancel_button.isEnabled()

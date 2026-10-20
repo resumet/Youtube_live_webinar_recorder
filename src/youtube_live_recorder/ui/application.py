@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from youtube_live_recorder.bootstrap import ApplicationContext
 from youtube_live_recorder.ui.controller import Controller
-from youtube_live_recorder.ui.main_window import MainWindow
+from youtube_live_recorder.ui.main_window import PAGE_NAMES, MainWindow
 
 
 def run_gui(context: ApplicationContext, *, smoke_report: Path | None = None) -> int:
@@ -36,7 +36,7 @@ def run_gui(context: ApplicationContext, *, smoke_report: Path | None = None) ->
             rendered = window.grab().save(str(screenshot))
             screen = window.screen()
             pages = []
-            for index, name in enumerate(("dashboard", "queue", "history", "settings")):
+            for index, name in enumerate(PAGE_NAMES):
                 window.select_page(index)
                 app.processEvents()
                 page_image = smoke_report.with_name(f"{smoke_report.stem}-{name}.png")

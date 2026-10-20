@@ -47,7 +47,7 @@ def verify_display(bundle: Path, reports: Path) -> Path:
         "성공": all(
             result["성공"]
             and result.get("화면 안에 창 표시")
-            and len(result.get("페이지", [])) == 4
+            and len(result.get("페이지", [])) == 5
             for result in results
         ),
         "범위": "Windows 네이티브 Qt · 프로세스별 Qt 배율 시뮬레이션, OS 설정 변경 없음",

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from youtube_live_recorder.data.models import BroadcastStatus, Quality
+from youtube_live_recorder.ui.archive_page import ArchivePage
 from youtube_live_recorder.ui.controller import Controller, Snapshot
 from youtube_live_recorder.ui.dashboard import Dashboard
 from youtube_live_recorder.ui.dialogs import EditDialog, confirm
@@ -39,6 +40,8 @@ from youtube_live_recorder.utils.urls import parse_video_url
 GOOGLE_DRIVE_FOLDER_URL = (
     "https://drive.google.com/drive/folders/1R0hzzsDs0M7SOW6vOfe4ayZ353TRcE93?usp=sharing"
 )
+PAGE_TITLES = ("대시보드", "녹화 대기", "종료영상 다운로드", "녹화 기록", "설정")
+PAGE_NAMES = ("dashboard", "queue", "archives", "history", "settings")
 
 
 class MainWindow(QMainWindow):
@@ -82,8 +85,7 @@ class MainWindow(QMainWindow):
         navigation.addSpacing(28)
         group = QButtonGroup(self)
         self.nav_buttons = []
-        titles = ("대시보드", "녹화 대기", "녹화 기록", "설정")
-        for index, title in enumerate(titles):
+        for index, title in enumerate(PAGE_TITLES):
             button = QPushButton(title)
             button.setObjectName("nav")
             button.setCheckable(True)
@@ -122,9 +124,10 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.dashboard = Dashboard()
         self.queue = QueuePage()
+        self.archives = ArchivePage()
         self.history = HistoryPage()
         self.settings = SettingsPage()
-        for page in (self.dashboard, self.queue, self.history, self.settings):
+        for page in (self.dashboard, self.queue, self.archives, self.history, self.settings):
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setWidget(page)
@@ -157,6 +160,10 @@ class MainWindow(QMainWindow):
         self.queue.edit_requested.connect(self.edit_broadcast)
         self.queue.cancel_requested.connect(self.cancel_broadcast)
         self.queue.retry_requested.connect(self.controller.retry)
+        self.archives.download_requested.connect(self.download_archive)
+        self.archives.cancel_requested.connect(self.cancel_archive)
+        self.archives.retry_requested.connect(self.controller.retry)
+        self.archives.folder_requested.connect(self.open_archive_folder)
         self.history.open_requested.connect(self.open_recording)
         self.settings.folder_requested.connect(self.controller.save_folder)
         self.settings.concurrency_requested.connect(self.controller.save_concurrency)
@@ -220,7 +227,12 @@ class MainWindow(QMainWindow):
     def select_page(self, index: int):
         self.stack.setCurrentIndex(index)
         self.nav_buttons[index].setChecked(True)
-        self.page_title.setText(("대시보드", "녹화 대기", "녹화 기록", "설정")[index])
+        self.page_title.setText(PAGE_TITLES[index])
+        self.subtitle.setText(
+            "종료된 라이브 URL로 전체 다시보기를 다운로드합니다."
+            if index == 2
+            else "방송 URL을 등록하면 라이브 시작을 자동으로 확인합니다."
+        )
 
     def show_message(self, text: str, *, error: bool = False):
         self.banner.setText(text)
@@ -275,7 +287,15 @@ class MainWindow(QMainWindow):
                 self.dashboard.url.clear()
                 self.dashboard.filename.clear()
                 self.dashboard.permission.setChecked(False)
+        if name == "archive":
+            self.archives.set_submitting(False)
+            if success:
+                self.archives.url.clear()
+                self.archives.filename.clear()
+                self.archives.permission.setChecked(False)
         messages = {
+            "archive": "종료영상을 등록했습니다. 다시보기가 준비되면 전체 영상을 다운로드합니다.",
+            "archive_cancel": "다운로드 대기를 취소했습니다.",
             "add": "방송을 대기 목록에 등록했습니다.",
             "cancel": "방송 대기를 취소했습니다.",
             "edit": "방송 설정을 변경했습니다.",
@@ -308,7 +328,8 @@ class MainWindow(QMainWindow):
         self.snapshot = snapshot
         self.stop_pending.intersection_update(s.id for s in snapshot.active_sessions)
         self.dashboard.update_snapshot(snapshot, self.engine_running, self.stop_pending)
-        self.queue.update_items(snapshot.queue)
+        self.queue.update_items(tuple(item for item in snapshot.queue if not item.archive_download))
+        self.archives.update_snapshot(snapshot, self.stop_pending)
         self.history.update_snapshot(snapshot)
         self.settings.folder.setText(str(snapshot.save_folder))
         self.settings.sync_limit(snapshot.max_concurrent_recordings)
@@ -343,7 +364,7 @@ class MainWindow(QMainWindow):
                 message = MESSAGES.get(code, "방송 상태를 확인해 주세요.")
                 self.show_message(message, error=True)
                 self.last_notification_folder = None
-                self.last_notification_page = 1
+                self.last_notification_page = 2 if item.archive_download else 1
                 self.tray.showMessage(
                     "녹화 확인이 필요합니다", message, QSystemTrayIcon.MessageIcon.Warning, 5000
                 )
@@ -399,6 +420,47 @@ class MainWindow(QMainWindow):
             self.stop_pending.add(session_id)
             self.dashboard.stop_button.setEnabled(False)
             self.controller.stop_recording(session_id)
+
+    @Slot(str, object, str, bool)
+    def download_archive(self, url, quality, filename, permission):
+        try:
+            parse_video_url(url)
+            if not permission:
+                self.show_message("다운로드하고 저장할 권한을 먼저 확인해 주세요.", error=True)
+                return
+        except AppError as error:
+            self.show_message(str(error), error=True)
+            return
+        self.archives.set_submitting(True)
+        self.controller.download_archive(url, Quality(quality), filename, permission)
+
+    @Slot(str)
+    def cancel_archive(self, identifier):
+        item = self.selected_broadcast(identifier)
+        if not item or not item.archive_download:
+            return
+        active = next(
+            (s for s in self.snapshot.active_sessions if s.broadcast_id == identifier), None
+        )
+        if confirm(
+            self,
+            "다운로드 취소",
+            "선택한 다운로드를 취소할까요? 받은 부분 파일은 보존됩니다.",
+            "다운로드 취소",
+        ):
+            if active:
+                self.stop_pending.add(active.id)
+                self.archives.cancel_button.setEnabled(False)
+                self.controller.stop_recording(active.id)
+            else:
+                self.controller.cancel(identifier, operation="archive_cancel")
+
+    @Slot(str)
+    def open_archive_folder(self, identifier):
+        if not self.snapshot:
+            return
+        session = next((s for s in self.snapshot.sessions if s.broadcast_id == identifier), None)
+        self.open_folder(self.snapshot.recording_folder(session.id if session else None))
 
     @Slot(str, bool)
     def open_recording(self, identifier, folder):

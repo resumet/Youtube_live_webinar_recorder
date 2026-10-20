@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 from youtube_live_recorder import __version__
 from youtube_live_recorder.bootstrap import ApplicationContext
 from youtube_live_recorder.config import Settings
+from youtube_live_recorder.core.archive_downloads import ArchiveDownloads
 from youtube_live_recorder.core.engine import Engine
 from youtube_live_recorder.data.models import (
     ACTIVE_SESSIONS,
@@ -175,9 +176,21 @@ class Controller(QObject):
 
         self._operation("add", action)
 
-    def cancel(self, identifier: str) -> None:
+    def download_archive(self, url: str, quality: Quality, filename: str, permission: bool) -> None:
+        def action():
+            provider = self.metadata or YtdlpAdapter(Toolchain.discover())
+            ArchiveDownloads(self.repository, provider).register(
+                url,
+                permission_confirmed=permission,
+                quality=quality,
+                custom_filename=filename,
+            )
+
+        self._operation("archive", action)
+
+    def cancel(self, identifier: str, *, operation: str = "cancel") -> None:
         self._operation(
-            "cancel", lambda: self.repository.transition(identifier, BroadcastStatus.CANCELLED)
+            operation, lambda: self.repository.transition(identifier, BroadcastStatus.CANCELLED)
         )
 
     def edit(self, identifier: str, quality: Quality, filename: str) -> None:
