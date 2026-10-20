@@ -1,5 +1,6 @@
 import logging
 import random
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -27,6 +28,28 @@ from youtube_live_recorder.utils.time import from_iso, utc_now
 
 LOGGER = logging.getLogger(__name__)
 RETRYABLE = {ErrorCode.NETWORK_DISCONNECTED, ErrorCode.RATE_LIMITED}
+
+
+class _AnyEvent:
+    """Event-like object that is set when either source event is set."""
+
+    def __init__(self, primary: Event, secondary: Event) -> None:
+        self.primary, self.secondary = primary, secondary
+
+    def is_set(self) -> bool:
+        return self.primary.is_set() or self.secondary.is_set()
+
+    def set(self) -> None:
+        self.primary.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not self.is_set():
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return False
+            self.primary.wait(0.05 if remaining is None else min(0.05, remaining))
+        return True
 
 
 @dataclass
@@ -58,6 +81,7 @@ class RecordingManager:
         storage_check=check_storage,
         disk_interval: float = 5,
         confirmation_seconds: float = 1,
+        end_check_interval: float = 30,
     ) -> None:
         self.repository, self.settings, self.metadata = repository, settings, metadata
         self.backend, self.finalizer = backend, finalizer
@@ -73,6 +97,7 @@ class RecordingManager:
         self.retry_wait = retry_wait or (lambda stop, delay: stop.wait(delay))
         self.jitter, self.storage_check = jitter, storage_check
         self.disk_interval, self.confirmation_seconds = disk_interval, confirmation_seconds
+        self.end_check_interval = max(0.01, end_check_interval)
 
     def start(
         self, broadcast_id: str, mode: RecordingMode = RecordingMode.LIVE
@@ -166,6 +191,30 @@ class RecordingManager:
                 return False
         return True
 
+    def _watch_live_end(
+        self, url: str, stop: Event, done: Event, natural_end: Event
+    ) -> None:
+        confirmations = 0
+        while not done.wait(self.end_check_interval):
+            if stop.is_set():
+                return
+            try:
+                state = self.metadata.fetch(url).state
+            except AppError as error:
+                confirmations = 0
+                LOGGER.info("녹화 중 방송 종료 확인 실패: %s", error.code)
+                continue
+            if done.is_set() or stop.is_set():
+                return
+            if state in {LiveState.WAS_LIVE, LiveState.POST_LIVE}:
+                confirmations += 1
+                if confirmations >= 2:
+                    LOGGER.info("방송 종료를 연속 확인하여 녹화를 자동 종료합니다.")
+                    natural_end.set()
+                    return
+            else:
+                confirmations = 0
+
     def _record(self, task: RecordingTask) -> None:
         session, stop, settings = task.session, task.stop, task.settings
         item = self.repository.get_broadcast(session.broadcast_id)
@@ -225,24 +274,46 @@ class RecordingManager:
                 segment_work = work / f"segment-{index:04d}"
                 segment = self.repository.add_segment(session.id, index, str(segment_work))
                 self._set_progress(task, None)
-                result = self.backend.capture(
-                    CaptureRequest(
-                        item.original_url,
-                        item.preferred_quality,
-                        segment_work,
-                        from_start,
-                        lambda height: self.repository.record_actual_quality(session.id, height),
-                        (lambda progress: self._set_progress(task, progress))
-                        if session.mode == RecordingMode.REPLAY
-                        else None,
-                    ),
-                    stop,
-                )
+                natural_end = Event()
+                end_watch_done = Event()
+                capture_stop = _AnyEvent(stop, natural_end)
+                end_monitor = None
+                if session.mode == RecordingMode.LIVE:
+                    end_monitor = Thread(
+                        target=self._watch_live_end,
+                        args=(item.original_url, stop, end_watch_done, natural_end),
+                        name="live-end-watch",
+                        daemon=True,
+                    )
+                    end_monitor.start()
+                try:
+                    result = self.backend.capture(
+                        CaptureRequest(
+                            item.original_url,
+                            item.preferred_quality,
+                            segment_work,
+                            from_start,
+                            lambda height: self.repository.record_actual_quality(
+                                session.id, height
+                            ),
+                            (lambda progress: self._set_progress(task, progress))
+                            if session.mode == RecordingMode.REPLAY
+                            else None,
+                        ),
+                        capture_stop,
+                    )
+                finally:
+                    end_watch_done.set()
+                    if end_monitor is not None:
+                        end_monitor.join(timeout=0.1)
+                ended_by_watch = natural_end.is_set()
                 last_error = result.error_code
-                user_stopped = result.stopped_by_user
+                user_stopped = result.stopped_by_user and not ended_by_watch
+                ended = ended_by_watch
                 fallback = (
                     from_start
                     and not stop.is_set()
+                    and not ended_by_watch
                     and last_error in {ErrorCode.DVR_UNAVAILABLE, ErrorCode.FORMAT_UNAVAILABLE}
                     and not any(p.exists() and p.stat().st_size for p in result.files)
                 )
@@ -250,7 +321,7 @@ class RecordingManager:
                     self.repository.finish_segment(segment, None, "DVR 시작 구간 사용 불가")
                     from_start, gap, index = False, True, index + 1
                     continue
-                if not stop.is_set() and not user_stopped:
+                if not stop.is_set() and not user_stopped and not ended_by_watch:
                     try:
                         ended = session.mode == RecordingMode.REPLAY and result.return_code == 0
                         if session.mode == RecordingMode.LIVE:
@@ -338,7 +409,13 @@ class RecordingManager:
                 and last_valid
             ):
                 target = B.COMPLETED
-            elif ended and result.return_code == 0 and not gap and not failed_piece and saved:
+            elif (
+                ended
+                and (result.return_code == 0 or ended_by_watch)
+                and not gap
+                and not failed_piece
+                and saved
+            ):
                 target = B.COMPLETED
             elif last_error in {
                 ErrorCode.STREAM_UNAVAILABLE,

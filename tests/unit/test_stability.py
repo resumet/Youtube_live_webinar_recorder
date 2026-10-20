@@ -1,3 +1,4 @@
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
@@ -189,6 +190,54 @@ def test_stop_without_media_still_cancels_instead_of_auto_retry(repository, tmp_
         recorder.future.result(5)
         assert repository.get_broadcast(item.id).status == B.CANCELLED
         assert repository.list_sessions()[0].status == S.FAILED
+    finally:
+        recorder.shutdown()
+
+
+def test_live_end_monitor_stops_stuck_capture_and_completes(repository, tmp_path):
+    item = add(repository)
+    capture = Capture([ErrorCode.STREAM_UNAVAILABLE], hold=True)
+    metadata = Metadata(LiveState.WAS_LIVE, LiveState.WAS_LIVE)
+    recorder = manager(
+        repository,
+        tmp_path,
+        metadata,
+        capture,
+        end_check_interval=0.01,
+    )
+    try:
+        session = recorder.start(item.id)
+        recorder.future.result(5)
+        result = repository.get_session(session.id)
+        assert metadata.calls == 2
+        assert capture.requests and result.status == S.COMPLETE
+        assert repository.get_broadcast(item.id).status == B.COMPLETED
+        assert result.ffprobe_ok and Path(result.output_path).is_file()
+    finally:
+        recorder.shutdown()
+
+
+def test_live_end_monitor_requires_two_consecutive_confirmations(repository, tmp_path):
+    item = add(repository)
+    capture = Capture(hold=True)
+    metadata = Metadata(LiveState.WAS_LIVE, LiveState.LIVE, default=LiveState.LIVE)
+    recorder = manager(
+        repository,
+        tmp_path,
+        metadata,
+        capture,
+        end_check_interval=0.01,
+    )
+    try:
+        recorder.start(item.id)
+        assert capture.entered.wait(2)
+        deadline = time.monotonic() + 2
+        while metadata.calls < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert metadata.calls >= 2 and recorder.future and not recorder.future.done()
+        recorder.stop()
+        recorder.future.result(5)
+        assert repository.get_broadcast(item.id).status == B.CANCELLED
     finally:
         recorder.shutdown()
 
