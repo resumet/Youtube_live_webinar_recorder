@@ -210,8 +210,11 @@ def test_ended_requires_two_confirmations_and_valid_file(repository, tmp_path):
     ],
 )
 def test_filename_date_basis_persists_with_partial_history(
-    repository, tmp_path, scheduled, actual, custom, expected, basis
+    repository, tmp_path, monkeypatch, scheduled, actual, custom, expected, basis
 ):
+    now = datetime(2026, 10, 20, 0, tzinfo=UTC)
+    monkeypatch.setattr("youtube_live_recorder.data.repository.utc_now", lambda: now)
+
     class UnknownStart:
         def fetch(self, url):
             return BroadcastMetadata(
@@ -224,7 +227,7 @@ def test_filename_date_basis_persists_with_partial_history(
     metadata = UnknownStart()
     manager = setup_manager(repository, tmp_path, metadata, Capture(user_stop=True))
     try:
-        Scheduler(repository, metadata, manager).tick(datetime(2026, 10, 20, 0, tzinfo=UTC))
+        Scheduler(repository, metadata, manager).tick(now)
         wait_manager(manager)
         session = repository.list_sessions()[0]
         assert session.output_path == str(tmp_path / expected)
