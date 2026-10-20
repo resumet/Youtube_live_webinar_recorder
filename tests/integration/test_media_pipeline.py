@@ -258,6 +258,8 @@ def test_audio_missing_and_corrupt_media_rejected(tmp_path, tools):
 
 
 def test_ytdlp_local_http_download_and_mp4_pipeline(sample, tmp_path, tools, monkeypatch):
+    updates = []
+
     class QuietHandler(SimpleHTTPRequestHandler):
         def log_message(self, *_):
             pass
@@ -279,10 +281,19 @@ def test_ytdlp_local_http_download_and_mp4_pipeline(sample, tmp_path, tools, mon
     monkeypatch.setattr(adapter, "capture_args", local_args)
     try:
         result = adapter.capture(
-            CaptureRequest("https://youtu.be/Abc_123-xYz", Quality.BEST, tmp_path / "work", False),
+            CaptureRequest(
+                "https://youtu.be/Abc_123-xYz",
+                Quality.BEST,
+                tmp_path / "work",
+                False,
+                on_progress=updates.append,
+            ),
             threading.Event(),
         )
         assert result.return_code == 0 and result.files
+        assert updates and updates[-1].transfer_finished
+        assert updates[-1].total_bytes == updates[-1].downloaded_bytes == sample.stat().st_size
+        assert updates[-1].percent == 100
         finalized = FFmpegAdapter(tools.ffmpeg, FFprobeAdapter(tools.ffprobe)).finalize(
             result.files, tmp_path, "로컬 다운로드.mp4"
         )
@@ -368,6 +379,9 @@ def test_scheduler_to_real_download_to_verified_database_history(
         assert abs(session.duration_seconds - original.duration_seconds) < 0.1
         if archive:
             assert session.mode == "REPLAY" and not session.from_start_attempted
+            progress = manager.progress_snapshot()[session.id]
+            assert progress.transfer_finished and progress.percent == 100
+            assert progress.total_bytes == sample.stat().st_size
         assert repository.active_session() is None
         assert sample.exists()
     finally:
@@ -375,6 +389,109 @@ def test_scheduler_to_real_download_to_verified_database_history(
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=5)
+
+
+def test_real_split_video_audio_progress_has_combined_size_percent_and_eta(
+    sample,
+    tmp_path,
+    tools,
+    monkeypatch,
+):
+    formats = []
+    for identifier, suffix, options in (("v", "mp4", ["-an"]), ("a", "m4a", ["-vn"])):
+        path = tmp_path / f"{identifier}.{suffix}"
+        result = ProcessRunner().run(
+            [
+                str(tools.ffmpeg),
+                "-v",
+                "error",
+                "-i",
+                str(sample),
+                *options,
+                "-c",
+                "copy",
+                str(path),
+            ]
+        )
+        assert result.return_code == 0
+        formats.append(
+            {
+                "format_id": identifier,
+                "ext": suffix,
+                "filesize": path.stat().st_size,
+                "vcodec": "mpeg4" if identifier == "v" else "none",
+                "acodec": "aac" if identifier == "a" else "none",
+                "protocol": "http",
+            }
+        )
+
+    class QuietHandler(SimpleHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(QuietHandler, directory=str(tmp_path))
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    for fmt in formats:
+        fmt["url"] = f"http://127.0.0.1:{server.server_port}/{fmt['format_id']}.{fmt['ext']}"
+    info = tmp_path / "split.json"
+    info.write_text(
+        json.dumps(
+            {
+                "id": "Abc_123-xYz",
+                "title": "split",
+                "duration": 1,
+                "extractor": "generic",
+                "webpage_url": "https://example.test/fixture",
+                "formats": formats,
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter = YtdlpAdapter(tools)
+    original_args = adapter.capture_args
+
+    def local_args(request):
+        return [
+            *original_args(request)[:-2],
+            "--load-info-json",
+            str(info),
+            "--limit-rate",
+            "8K",
+            "--progress-delta",
+            "0.05",
+        ]
+
+    monkeypatch.setattr(adapter, "capture_args", local_args)
+    updates = []
+    try:
+        result = adapter.capture(
+            CaptureRequest(
+                "https://youtu.be/Abc_123-xYz",
+                Quality.BEST,
+                tmp_path / "split-work",
+                False,
+                on_progress=updates.append,
+            ),
+            threading.Event(),
+        )
+        assert result.return_code == 0
+        total = sum(fmt["filesize"] for fmt in formats)
+        assert updates[-1].downloaded_bytes == updates[-1].total_bytes == total
+        assert updates[-1].transfer_finished and updates[-1].percent == 100
+        midway = [p for p in updates if p.percent and 0 < p.percent < 100 and p.eta_seconds]
+        assert midway and all(p.total_bytes == total for p in midway)
+        assert any(p.downloaded_bytes > formats[0]["filesize"] for p in midway)
+        finalized = FFmpegAdapter(tools.ffmpeg, FFprobeAdapter(tools.ffprobe)).finalize(
+            result.files, tmp_path, "영상음성합산.mp4"
+        )
+        assert finalized.valid
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_real_interrupted_http_reconnect_keeps_partial_and_verified_recovered_file(

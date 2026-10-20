@@ -187,6 +187,15 @@ def run_self_test(root: Path) -> dict:
             or abs(downloaded.duration_seconds - sample.duration_seconds) > 0.1
         ):
             raise RuntimeError("종료영상 전체 다운로드 또는 길이 검사에 실패했습니다.")
+        progress = manager.progress_snapshot().get(downloaded.id)
+        if (
+            not progress
+            or not progress.transfer_finished
+            or progress.percent != 100
+            or progress.total_bytes != sample.size_bytes
+            or progress.downloaded_bytes != sample.size_bytes
+        ):
+            raise RuntimeError("종료영상 다운로드 진행률 또는 전체 용량 검사에 실패했습니다.")
         report = {
             "성공": True,
             "yt-dlp": ytdlp.stdout.strip(),
@@ -201,6 +210,9 @@ def run_self_test(root: Path) -> dict:
             "종료영상 파일": downloaded.output_path,
             "종료영상 길이": downloaded.duration_seconds,
             "원본 길이": sample.duration_seconds,
+            "다운로드 진행률": progress.percent,
+            "전체 다운로드 바이트": progress.total_bytes,
+            "받은 바이트": progress.downloaded_bytes,
             "범위": "로컬 영상 5개 동시 전송 + 종료영상 전체 다운로드 · 실제 YouTube 시험 아님",
         }
         (folder / "result.json").write_text(

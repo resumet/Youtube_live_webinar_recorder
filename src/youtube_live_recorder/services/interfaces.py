@@ -6,6 +6,7 @@ from threading import Event
 from typing import Protocol
 
 from youtube_live_recorder.data.models import Quality
+from youtube_live_recorder.services.download_progress import DownloadProgress
 from youtube_live_recorder.utils.errors import ErrorCode
 
 
@@ -56,6 +57,7 @@ class CaptureRequest:
     work_directory: Path
     from_start: bool
     on_quality: Callable[[int], None] | None = None
+    on_progress: Callable[[DownloadProgress], None] | None = None
 
 
 @dataclass(frozen=True)

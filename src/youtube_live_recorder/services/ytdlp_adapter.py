@@ -4,6 +4,11 @@ from datetime import UTC, datetime
 from threading import Event
 
 from youtube_live_recorder.data.models import Quality
+from youtube_live_recorder.services.download_progress import (
+    PLAN_TEMPLATE,
+    PROGRESS_TEMPLATE,
+    ProgressTracker,
+)
 from youtube_live_recorder.services.interfaces import (
     BroadcastMetadata,
     CaptureRequest,
@@ -151,8 +156,22 @@ class YtdlpAdapter:
 
     def capture_args(self, request: CaptureRequest) -> list[str]:
         url = parse_video_url(request.url).canonical_url
+        progress_args = (
+            [
+                "--progress",
+                "--progress-delta",
+                "1",
+                "--print",
+                PLAN_TEMPLATE,
+                "--progress-template",
+                PROGRESS_TEMPLATE,
+            ]
+            if request.on_progress
+            else []
+        )
         return [
             *self.base_args(),
+            *progress_args,
             "--newline",
             "--no-warnings",
             "--no-overwrites",
@@ -184,8 +203,11 @@ class YtdlpAdapter:
     def capture(self, request: CaptureRequest, stop: Event) -> CaptureResult:
         request.work_directory.mkdir(parents=True, exist_ok=True)
         video_id = parse_video_url(request.url).video_id
+        tracker = ProgressTracker(request.on_progress) if request.on_progress else None
 
         def line(name: str, value: str) -> None:
+            if tracker and tracker.feed(value):
+                return
             if name == "stdout" and value.startswith("YLR_FORMAT ") and request.on_quality:
                 try:
                     height = json.loads(value.removeprefix("YLR_FORMAT ").strip())

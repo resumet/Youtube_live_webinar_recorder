@@ -15,6 +15,7 @@ from youtube_live_recorder.data.models import Quality, RecordingMode
 from youtube_live_recorder.data.models import SessionStatus as S
 from youtube_live_recorder.data.replays import ReplayStore
 from youtube_live_recorder.data.repository import Repository
+from youtube_live_recorder.services.download_progress import DownloadProgress
 from youtube_live_recorder.services.interfaces import (
     BroadcastMetadata,
     CaptureResult,
@@ -77,6 +78,46 @@ def recorder(repository, tmp_path, media, limit=5):
         media,
         media,
     )
+
+
+def test_replay_retry_resets_transfer_bytes_without_counting_preserved_partial_file(
+    repository,
+    tmp_path,
+):
+    class ReconnectingMedia(Media):
+        def capture(self, request, stop):
+            assert manager.progress_snapshot() == {}
+            result = super().capture(request, stop)
+            progress = DownloadProgress(100, 200, 50, 10, 10, True, False, 0)
+            request.on_progress(progress)
+            assert list(manager.progress_snapshot().values()) == [progress]
+            if len(self.requests) == 1:
+                return replace(result, return_code=1, error_code=ErrorCode.NETWORK_DISCONNECTED)
+            request.on_progress(
+                replace(progress, downloaded_bytes=200, percent=100, transfer_finished=True)
+            )
+            return result
+
+    media = ReconnectingMedia()
+    manager = RecordingManager(
+        repository,
+        Settings(tmp_path, min_free_bytes=0, max_reconnect_attempts=1),
+        media,
+        media,
+        media,
+        retry_wait=lambda *_: False,
+        jitter=lambda *_: 0,
+    )
+    try:
+        item = register(repository, media)
+        session = manager.start(item.id, RecordingMode.REPLAY)
+        manager.future.result(10)
+        assert len(media.requests) == 2
+        assert repository.get_session(session.id).status == S.COMPLETE
+        assert manager.progress_snapshot()[session.id].downloaded_bytes == 200
+        assert all((request.work_directory / "capture.mp4").exists() for request in media.requests)
+    finally:
+        manager.shutdown()
 
 
 @pytest.mark.parametrize(

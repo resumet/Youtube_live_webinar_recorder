@@ -12,6 +12,7 @@ from youtube_live_recorder.data.models import SessionStatus as S
 from youtube_live_recorder.data.replays import ReplayStore
 from youtube_live_recorder.data.repository import Repository
 from youtube_live_recorder.limits import MAX_CONCURRENT_RECORDINGS
+from youtube_live_recorder.services.download_progress import DownloadProgress
 from youtube_live_recorder.services.ffmpeg_adapter import FFmpegAdapter
 from youtube_live_recorder.services.interfaces import (
     CaptureBackend,
@@ -35,6 +36,7 @@ class RecordingTask:
     stop: Event = field(default_factory=Event)
     reason: str = ""
     future: Future | None = None
+    progress: DownloadProgress | None = None
 
     def request_stop(self, reason: str):
         if not self.stop.is_set():
@@ -108,6 +110,14 @@ class RecordingManager:
             for identifier, task in self.tasks.items():
                 if expected_session_id is None or identifier == expected_session_id:
                     task.request_stop(reason)
+
+    def progress_snapshot(self) -> dict[str, DownloadProgress]:
+        with self.lock:
+            return {key: task.progress for key, task in self.tasks.items() if task.progress}
+
+    def _set_progress(self, task: RecordingTask, progress: DownloadProgress | None) -> None:
+        with self.lock:
+            task.progress = progress
 
     def preempt_replay(self) -> bool:
         with self.lock:
@@ -214,6 +224,7 @@ class RecordingManager:
             while True:
                 segment_work = work / f"segment-{index:04d}"
                 segment = self.repository.add_segment(session.id, index, str(segment_work))
+                self._set_progress(task, None)
                 result = self.backend.capture(
                     CaptureRequest(
                         item.original_url,
@@ -221,6 +232,9 @@ class RecordingManager:
                         segment_work,
                         from_start,
                         lambda height: self.repository.record_actual_quality(session.id, height),
+                        (lambda progress: self._set_progress(task, progress))
+                        if session.mode == RecordingMode.REPLAY
+                        else None,
                     ),
                     stop,
                 )
