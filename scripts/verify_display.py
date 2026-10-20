@@ -1,4 +1,4 @@
-"""Qt의 배율 시뮬레이션으로 실제 Windows 번들의 네 화면을 렌더링한다."""
+"""Qt의 배율 시뮬레이션으로 실제 Windows 번들의 다섯 화면을 렌더링한다."""
 
 import argparse
 import json
