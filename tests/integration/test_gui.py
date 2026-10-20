@@ -495,6 +495,7 @@ def test_archive_progress_survives_refresh_and_distinguishes_transfer_from_verif
     desktop,
     qtbot,
     tmp_path,
+    monkeypatch,
 ):
     window, controller, context = desktop
     repo = context.repository
@@ -514,6 +515,14 @@ def test_archive_progress_survives_refresh_and_distinguishes_transfer_from_verif
     )
     window.select_page(2)
     page = window.archives
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+
+    def double_click_download():
+        window.stack.currentWidget().ensureWidgetVisible(page.table)
+        position = page.table.visualItemRect(page.table.item(0, 2)).center()
+        qtbot.mouseClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=position)
+        qtbot.mouseDClick(page.table.viewport(), Qt.MouseButton.LeftButton, pos=position)
 
     def refresh():
         with qtbot.waitSignal(controller.snapshot_ready, timeout=5000):
@@ -546,6 +555,8 @@ def test_archive_progress_survives_refresh_and_distinguishes_transfer_from_verif
     repo.transition(item.id, B.VERIFYING)
     refresh()
     assert page.table.item(0, 4).text() == "파일 검사 중"
+    double_click_download()
+    assert opened == []  # 전송 100%여도 파일 검사가 끝나지 않았다.
     repo.finish_session(
         session.id,
         S.COMPLETE,
@@ -555,6 +566,14 @@ def test_archive_progress_survives_refresh_and_distinguishes_transfer_from_verif
     refresh()
     assert page.table.item(0, 4).text() == "완료"
     assert page.progress.value() == 1000 and not page.cancel_button.isEnabled()
+    double_click_download()
+    assert opened == [QUrl.fromLocalFile(str(tmp_path))]
+    assert tmp_path != Settings.load(repo).save_folder
+    window.stack.currentWidget().ensureWidgetVisible(page.open_drive_button)
+    qtbot.mouseClick(page.open_drive_button, Qt.MouseButton.LeftButton)
+    assert opened[-1].toString() == (
+        "https://drive.google.com/drive/folders/1R0hzzsDs0M7SOW6vOfe4ayZ353TRcE93?usp=sharing"
+    )
 
 
 def test_registration_during_refresh_requests_a_fresh_snapshot(desktop, qtbot, monkeypatch):

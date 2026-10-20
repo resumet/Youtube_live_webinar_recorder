@@ -1,4 +1,4 @@
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from youtube_live_recorder.data.models import STATUS_LABELS, Quality
 from youtube_live_recorder.data.models import BroadcastStatus as B
+from youtube_live_recorder.data.models import SessionStatus as S
 from youtube_live_recorder.services.interfaces import LiveState
 from youtube_live_recorder.ui.controller import Snapshot
 from youtube_live_recorder.ui.download_progress import progress_display
@@ -25,6 +26,7 @@ class ArchivePage(QWidget):
     cancel_requested = Signal(str)
     retry_requested = Signal(str)
     folder_requested = Signal(str)
+    drive_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -87,6 +89,7 @@ class ArchivePage(QWidget):
         self.table.setMinimumHeight(180)
         self.table.setMaximumHeight(320)
         self.table.itemSelectionChanged.connect(self._selection_changed)
+        self.table.cellDoubleClicked.connect(self._open_completed_folder)
         layout.addWidget(self.table)
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
@@ -120,6 +123,10 @@ class ArchivePage(QWidget):
                 lambda checked=False, s=signal: s.emit(selected_id(self.table) or "")
             )
             actions.addWidget(button)
+        self.open_drive_button = QPushButton("구글 드라이브 열기")
+        self.open_drive_button.setToolTip("지정한 구글 드라이브 폴더를 기본 브라우저로 엽니다.")
+        self.open_drive_button.clicked.connect(self.drive_requested)
+        actions.addWidget(self.open_drive_button)
         actions.addStretch()
         layout.addLayout(actions)
         layout.addStretch()
@@ -134,7 +141,8 @@ class ArchivePage(QWidget):
         self.folder.setText(f"저장 폴더: {snapshot.save_folder}\n설정에서 변경할 수 있습니다.")
         self.hint.setText(
             f"라이브 녹화와 합쳐 최대 {snapshot.max_concurrent_recordings}개 동시 처리 · "
-            "빈자리가 나면 자동 시작 · 목록은 재시작 후에도 유지됩니다."
+            "빈자리가 나면 자동 시작 · 목록은 재시작 후에도 유지됩니다.\n"
+            "완료된 항목을 두 번 클릭하면 저장 폴더가 열립니다."
         )
         items = [b for b in reversed(snapshot.broadcasts) if b.archive_download]
         rows = []
@@ -168,6 +176,22 @@ class ArchivePage(QWidget):
         if rows and selected_id(self.table) is None:
             self.table.selectRow(0)
         self._selection_changed()
+
+    def _open_completed_folder(self, row: int, _column: int):
+        cell = self.table.item(row, 0)
+        if not self.snapshot or cell is None:
+            return
+        identifier = cell.data(Qt.ItemDataRole.UserRole)
+        item = next((b for b in self.snapshot.broadcasts if b.id == identifier), None)
+        session = next((s for s in self.snapshot.sessions if s.broadcast_id == identifier), None)
+        if (
+            item
+            and item.status == B.COMPLETED
+            and session
+            and session.status == S.COMPLETE
+            and session.output_path
+        ):
+            self.folder_requested.emit(identifier)
 
     def _selection_changed(self):
         identifier = selected_id(self.table)

@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
         self.archives.cancel_requested.connect(self.cancel_archive)
         self.archives.retry_requested.connect(self.controller.retry)
         self.archives.folder_requested.connect(self.open_archive_folder)
+        self.archives.drive_requested.connect(self.open_google_drive)
         self.history.open_requested.connect(self.open_recording)
         self.settings.folder_requested.connect(self.controller.save_folder)
         self.settings.concurrency_requested.connect(self.controller.save_concurrency)
