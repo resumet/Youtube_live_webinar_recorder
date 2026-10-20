@@ -9,6 +9,8 @@ from youtube_live_recorder.ui.widgets import label, populate, selected_id, table
 
 class HistoryPage(QWidget):
     open_requested = Signal(str, bool)
+    delete_requested = Signal(str)
+    delete_all_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -16,16 +18,29 @@ class HistoryPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         actions = QHBoxLayout()
         actions.addWidget(label("완료·부분 저장·실패 기록과 저장된 파일을 확인합니다.", "muted"), 1)
-        file_button = QPushButton("파일 열기")
-        file_button.clicked.connect(
+        self.file_button = QPushButton("파일 열기")
+        self.file_button.clicked.connect(
             lambda: self.open_requested.emit(selected_id(self.table) or "", False)
         )
-        folder_button = QPushButton("폴더 열기")
-        folder_button.clicked.connect(
+        self.folder_button = QPushButton("폴더 열기")
+        self.folder_button.clicked.connect(
             lambda: self.open_requested.emit(selected_id(self.table) or "", True)
         )
-        actions.addWidget(file_button)
-        actions.addWidget(folder_button)
+        self.delete_button = QPushButton("선택 삭제")
+        self.delete_button.setObjectName("danger")
+        self.delete_button.clicked.connect(
+            lambda: self.delete_requested.emit(selected_id(self.table) or "")
+        )
+        self.delete_all_button = QPushButton("전체 삭제")
+        self.delete_all_button.setObjectName("danger")
+        self.delete_all_button.clicked.connect(self.delete_all_requested)
+        for button in (self.file_button, self.folder_button, self.delete_button):
+            button.setEnabled(False)
+        self.delete_all_button.setEnabled(False)
+        actions.addWidget(self.file_button)
+        actions.addWidget(self.folder_button)
+        actions.addWidget(self.delete_button)
+        actions.addWidget(self.delete_all_button)
         layout.addLayout(actions)
         self.empty = label("아직 녹화 기록이 없습니다.", "muted")
         layout.addWidget(self.empty)
@@ -33,6 +48,7 @@ class HistoryPage(QWidget):
             ["방송 제목", "시작 날짜", "결과", "길이", "용량", "원본 URL", "저장 경로", "안내"]
         )
         self.table.setObjectName("historyTable")
+        self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.cellDoubleClicked.connect(
             lambda *_: self.open_requested.emit(selected_id(self.table) or "", False)
         )
@@ -77,3 +93,10 @@ class HistoryPage(QWidget):
         if rows != self._rows:
             self._rows = rows
             populate(self.table, rows)
+        self.delete_all_button.setEnabled(bool(rows))
+        self._selection_changed()
+
+    def _selection_changed(self):
+        enabled = selected_id(self.table) is not None
+        for button in (self.file_button, self.folder_button, self.delete_button):
+            button.setEnabled(enabled)

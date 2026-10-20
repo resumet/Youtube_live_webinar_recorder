@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from youtube_live_recorder.data.models import BroadcastStatus, Quality
+from youtube_live_recorder.data.models import ACTIVE_SESSIONS, BroadcastStatus, Quality
 from youtube_live_recorder.ui.archive_page import ArchivePage
 from youtube_live_recorder.ui.controller import Controller, Snapshot
 from youtube_live_recorder.ui.dashboard import Dashboard
@@ -166,6 +166,8 @@ class MainWindow(QMainWindow):
         self.archives.folder_requested.connect(self.open_archive_folder)
         self.archives.drive_requested.connect(self.open_google_drive)
         self.history.open_requested.connect(self.open_recording)
+        self.history.delete_requested.connect(self.delete_history)
+        self.history.delete_all_requested.connect(self.delete_all_history)
         self.settings.folder_requested.connect(self.controller.save_folder)
         self.settings.concurrency_requested.connect(self.controller.save_concurrency)
         self.settings.logs_requested.connect(
@@ -304,6 +306,8 @@ class MainWindow(QMainWindow):
             "concurrency": "동시 녹화 수를 저장했습니다. 진행 중인 녹화는 계속됩니다.",
             "retry": "방송 상태를 다시 확인합니다.",
             "stop": "녹화 중지를 요청했습니다. 파일을 정리하고 있습니다.",
+            "history_delete": "선택한 녹화 기록을 삭제했습니다. 저장된 영상 파일은 유지됩니다.",
+            "history_clear": "녹화 기록을 모두 삭제했습니다. 저장된 영상 파일은 유지됩니다.",
         }
         if name == "concurrency":
             self.settings.save_limit.setEnabled(True)
@@ -482,6 +486,33 @@ class MainWindow(QMainWindow):
         elif path.suffix.lower() == ".mp4":
             if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
                 self.show_message("파일을 열 수 없습니다. 저장 위치를 확인해 주세요.", error=True)
+
+    @Slot(str)
+    def delete_history(self, identifier: str):
+        if not self.snapshot or not any(s.id == identifier for s in self.snapshot.sessions):
+            return
+        if confirm(
+            self,
+            "녹화 기록 삭제",
+            "선택한 녹화 기록을 삭제할까요? 저장된 영상 파일은 삭제하지 않습니다.",
+            "선택 삭제",
+        ):
+            self.controller.delete_history(identifier)
+
+    @Slot()
+    def delete_all_history(self):
+        if not self.snapshot or not any(
+            s.status not in ACTIVE_SESSIONS for s in self.snapshot.sessions
+        ):
+            return
+        if confirm(
+            self,
+            "녹화 기록 전체 삭제",
+            "완료·부분 저장·실패·취소 기록을 모두 삭제할까요? "
+            "저장된 영상 파일과 진행 중인 녹화는 삭제하지 않습니다.",
+            "전체 삭제",
+        ):
+            self.controller.delete_history()
 
     @Slot(str)
     def open_active_recording_folder(self, identifier: str):

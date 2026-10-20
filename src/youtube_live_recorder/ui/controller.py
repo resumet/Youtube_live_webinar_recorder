@@ -206,6 +206,12 @@ class Controller(QObject):
     def retry(self, identifier: str) -> None:
         self._operation("retry", lambda: self.repository.retry_broadcast(identifier))
 
+    def delete_history(self, session_id: str | None = None) -> None:
+        self._operation(
+            "history_delete" if session_id else "history_clear",
+            lambda: self.repository.delete_history(session_id),
+        )
+
     def save_folder(self, folder: Path) -> None:
         def action():
             if not folder.is_absolute():

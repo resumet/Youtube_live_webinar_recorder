@@ -472,6 +472,47 @@ class Repository:
             ).fetchall()
         return [_session(row) for row in rows]
 
+    def delete_history(self, session_id: str | None = None) -> int:
+        """완료된 세션 기록만 삭제한다. 녹화 파일과 방송 등록 정보는 보존한다."""
+        terminal = "('COMPLETE','PARTIAL','FAILED','CANCELLED')"
+        with self.database.transaction() as connection:
+            if session_id is not None:
+                row = connection.execute(
+                    "SELECT status FROM recording_sessions WHERE id=?", (session_id,)
+                ).fetchone()
+                if row is None:
+                    return 0
+                if row["status"] not in {"COMPLETE", "PARTIAL", "FAILED", "CANCELLED"}:
+                    raise AppError(
+                        ErrorCode.INVALID_STATE, "진행 중인 녹화 기록은 삭제할 수 없습니다."
+                    )
+                identifiers = [session_id]
+            else:
+                identifiers = [
+                    row["id"]
+                    for row in connection.execute(
+                        f"SELECT id FROM recording_sessions WHERE status IN {terminal}"
+                    ).fetchall()
+                ]
+            if not identifiers:
+                return 0
+            placeholders = ",".join("?" for _ in identifiers)
+            # 이벤트는 장애 분석을 위해 남기되 삭제된 세션과의 연결만 해제한다.
+            connection.execute(
+                f"UPDATE app_events SET session_id=NULL WHERE session_id IN ({placeholders})",
+                identifiers,
+            )
+            connection.execute(
+                f"DELETE FROM recording_segments WHERE session_id IN ({placeholders})",
+                identifiers,
+            )
+            deleted = connection.execute(
+                f"DELETE FROM recording_sessions WHERE id IN ({placeholders}) "
+                f"AND status IN {terminal}",
+                identifiers,
+            ).rowcount
+        return deleted
+
     def edit_broadcast(self, identifier: str, quality: Quality, filename: str) -> None:
         quality = Quality(quality)
         with self.database.transaction() as connection:

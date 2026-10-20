@@ -1,4 +1,4 @@
-#define AppVersion "0.3.2"
+#define AppVersion "0.3.3"
 #define AppName "YouTube Live Recorder"
 #ifndef BundleDir
   #define BundleDir "..\dist\YouTubeLiveRecorder"

@@ -312,6 +312,68 @@ def test_progress_history_and_notification_state(desktop, tmp_path):
     assert "사용자가 중지" in window.history.table.item(0, 7).text()
 
 
+def test_history_selected_and_all_delete_keep_media_and_active_recording(
+    desktop, qtbot, monkeypatch, tmp_path
+):
+    window, controller, context = desktop
+    repo = context.repository
+    completed = []
+    for index in range(2):
+        item = repo.add_broadcast(f"https://youtu.be/History{index:04}", permission_confirmed=True)
+        repo.transition(item.id, B.LIVE_DETECTED)
+        session = repo.claim_session(item.id, RecordingMode.LIVE)
+        repo.set_session_state(session.id, S.RUNNING)
+        repo.transition(item.id, B.FINALIZING)
+        repo.set_session_state(session.id, S.FINALIZING)
+        repo.transition(item.id, B.VERIFYING)
+        repo.set_session_state(session.id, S.VERIFYING)
+        path = tmp_path / f"완료-{index}.mp4"
+        path.write_bytes(b"saved-media")
+        repo.finish_session(
+            session.id,
+            S.COMPLETE,
+            B.COMPLETED,
+            MediaInspection(path, True, 10, path.stat().st_size, "h264", "aac", 720),
+        )
+        completed.append((session, path))
+    active_item = repo.add_broadcast("https://youtu.be/History9999", permission_confirmed=True)
+    repo.transition(active_item.id, B.LIVE_DETECTED)
+    active = repo.claim_session(active_item.id, RecordingMode.LIVE)
+    confirmations = []
+    monkeypatch.setattr(
+        "youtube_live_recorder.ui.main_window.confirm",
+        lambda _parent, title, text, accept: confirmations.append((title, text, accept)) or True,
+    )
+    window.select_page(3)
+
+    def refresh():
+        with qtbot.waitSignal(controller.snapshot_ready, timeout=5000):
+            controller.refresh()
+
+    refresh()
+    page = window.history
+    assert page.table.rowCount() == 2 and page.delete_all_button.isEnabled()
+    page.table.selectRow(0)
+    assert page.delete_button.isEnabled()
+    deleted_id = page.table.item(0, 0).data(Qt.ItemDataRole.UserRole)
+    with qtbot.waitSignal(controller.operation_done, timeout=5000) as result:
+        qtbot.mouseClick(page.delete_button, Qt.MouseButton.LeftButton)
+    assert result.args[:2] == ["history_delete", True]
+    qtbot.waitUntil(lambda: page.table.rowCount() == 1, timeout=5000)
+    assert deleted_id not in {session.id for session in repo.list_sessions()}
+    assert all(path.is_file() for _, path in completed)
+    assert confirmations[-1][2] == "선택 삭제" and "영상 파일은 삭제하지" in confirmations[-1][1]
+
+    with qtbot.waitSignal(controller.operation_done, timeout=5000) as result:
+        qtbot.mouseClick(page.delete_all_button, Qt.MouseButton.LeftButton)
+    assert result.args[:2] == ["history_clear", True]
+    qtbot.waitUntil(lambda: page.table.rowCount() == 0, timeout=5000)
+    assert [session.id for session in repo.list_sessions()] == [active.id]
+    assert all(path.is_file() for _, path in completed)
+    assert not page.delete_all_button.isEnabled()
+    assert confirmations[-1][2] == "전체 삭제" and "진행 중인 녹화" in confirmations[-1][1]
+
+
 def test_multiple_recordings_select_stop_and_edit_guard(desktop, qtbot, monkeypatch, tmp_path):
     window, controller, context = desktop
     repo = context.repository

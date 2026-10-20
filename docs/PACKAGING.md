@@ -25,7 +25,7 @@ Inno Setup 7.1.0 x64의 고정 릴리스를 SHA256과 Authenticode 게시자 `Py
 | 폴더형 실행 파일 | `dist/YouTubeLiveRecorder/YouTubeLiveRecorder.exe` |
 | 콘솔 진단/녹화 워커 | `dist/YouTubeLiveRecorder/YouTubeLiveRecorderWorker.exe` |
 | 공유 라이브러리·도구·고지 | `dist/YouTubeLiveRecorder/_internal/` |
-| 설치 파일 (컴파일 성공 시) | `dist/installer/YouTubeLiveRecorder-0.3.2-Setup.exe` |
+| 설치 파일 (컴파일 성공 시) | `dist/installer/YouTubeLiveRecorder-0.3.3-Setup.exe` |
 
 GUI 실행 파일 하나만 복사하면 동작하지 않는다. 폴더 전체를 복사하거나 설치 파일을 사용한다.
 작업 공간의 DB·녹화·로그·테스트 URL은 패키지에 포함하지 않는다.

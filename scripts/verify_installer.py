@@ -185,7 +185,7 @@ if __name__ == "__main__":
         description="Windows 설치·재설치·제거와 사용자 데이터 보존 검사"
     )
     parser.add_argument(
-        "--setup", type=Path, default=ROOT / "dist/installer/YouTubeLiveRecorder-0.3.2-Setup.exe"
+        "--setup", type=Path, default=ROOT / "dist/installer/YouTubeLiveRecorder-0.3.3-Setup.exe"
     )
     parser.add_argument(
         "--running-guard-only", action="store_true", help="실행 중 설치 차단만 검사"

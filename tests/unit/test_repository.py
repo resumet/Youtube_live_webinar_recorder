@@ -1,11 +1,18 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
 from youtube_live_recorder.data.db import Database
-from youtube_live_recorder.data.models import BroadcastStatus, Quality, RecordingMode
+from youtube_live_recorder.data.models import (
+    BroadcastStatus,
+    Quality,
+    RecordingMode,
+    SessionStatus,
+)
 from youtube_live_recorder.data.repository import Repository
+from youtube_live_recorder.services.interfaces import MediaInspection
 from youtube_live_recorder.utils.errors import AppError, ErrorCode
 
 URL = "https://youtu.be/Abc_123-xYz"
@@ -129,3 +136,61 @@ def test_event_redacts_urls(repository, database):
         message = connection.execute("SELECT message FROM app_events").fetchone()[0]
     assert "secret" not in message
     assert "[URL 숨김]" in message
+
+
+def _completed_session(repository, tmp_path: Path, suffix: str):
+    item = register(repository, suffix)
+    repository.transition(item.id, BroadcastStatus.LIVE_DETECTED)
+    session = repository.claim_session(item.id, RecordingMode.LIVE)
+    repository.set_session_state(session.id, SessionStatus.RUNNING)
+    repository.transition(item.id, BroadcastStatus.FINALIZING)
+    repository.set_session_state(session.id, SessionStatus.FINALIZING)
+    repository.transition(item.id, BroadcastStatus.VERIFYING)
+    repository.set_session_state(session.id, SessionStatus.VERIFYING)
+    path = tmp_path / f"{suffix}.mp4"
+    path.write_bytes(b"saved-media")
+    repository.finish_session(
+        session.id,
+        SessionStatus.COMPLETE,
+        BroadcastStatus.COMPLETED,
+        MediaInspection(path, True, 10, path.stat().st_size, "h264", "aac", 720),
+    )
+    return item, session, path
+
+
+def test_delete_selected_and_all_history_preserve_files_events_and_active_session(
+    repository, database, tmp_path
+):
+    first_item, first, first_path = _completed_session(repository, tmp_path, "History0001")
+    _, second, second_path = _completed_session(repository, tmp_path, "History0002")
+    segment = repository.add_segment(first.id, 0, str(tmp_path / "temporary"))
+    repository.add_event(
+        "history", "기록 삭제 후에도 남는 이벤트", broadcast_id=first_item.id, session_id=first.id
+    )
+    active_item = register(repository, "History0003")
+    repository.transition(active_item.id, BroadcastStatus.LIVE_DETECTED)
+    active = repository.claim_session(active_item.id, RecordingMode.LIVE)
+
+    assert repository.delete_history(first.id) == 1
+    assert first_path.is_file() and second_path.is_file()
+    assert {session.id for session in repository.list_sessions()} == {second.id, active.id}
+    with database.connect() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM recording_segments WHERE id=?", (segment,)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute(
+                "SELECT session_id FROM app_events WHERE category='history'"
+            ).fetchone()[0]
+            is None
+        )
+
+    with pytest.raises(AppError):
+        repository.delete_history(active.id)
+    assert repository.delete_history() == 1
+    assert [session.id for session in repository.list_sessions()] == [active.id]
+    assert first_path.is_file() and second_path.is_file()
+    assert repository.delete_history() == 0
