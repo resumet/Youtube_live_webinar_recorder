@@ -1,4 +1,4 @@
-#define AppVersion "0.3.4"
+#define AppVersion "1.0.0"
 #define AppName "YouTube Live Recorder"
 #ifndef BundleDir
   #define BundleDir "..\dist\YouTubeLiveRecorder"
@@ -9,7 +9,8 @@ AppId={{35C68D30-7145-4C68-8A1E-37E7E726D209}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=YouTube Live Recorder
-AppSupportURL=https://github.com/blogbooster/WebinarAutoRecorder
+AppSupportURL=https://github.com/resumet/Youtube_live_webinar_recorder
+AppUpdatesURL=https://github.com/resumet/Youtube_live_webinar_recorder/releases/latest
 DefaultDirName={localappdata}\Programs\YouTubeLiveRecorder
 DefaultGroupName={#AppName}
 PrivilegesRequired=lowest

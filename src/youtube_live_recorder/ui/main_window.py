@@ -25,7 +25,7 @@ from youtube_live_recorder.data.models import ACTIVE_SESSIONS, BroadcastStatus, 
 from youtube_live_recorder.ui.archive_page import ArchivePage
 from youtube_live_recorder.ui.controller import Controller, Snapshot
 from youtube_live_recorder.ui.dashboard import Dashboard
-from youtube_live_recorder.ui.dialogs import EditDialog, confirm
+from youtube_live_recorder.ui.dialogs import EditDialog, confirm, show_about
 from youtube_live_recorder.ui.formatting import duration
 from youtube_live_recorder.ui.history_page import HistoryPage
 from youtube_live_recorder.ui.notifications import NotificationTracker
@@ -70,6 +70,19 @@ class MainWindow(QMainWindow):
         self.release = None
         self.update_path = None
         self.install_path = None
+
+        file_menu = self.menuBar().addMenu("파일(&F)")
+        exit_menu_action = QAction("완전 종료(&X)", self)
+        exit_menu_action.triggered.connect(self.request_quit)
+        file_menu.addAction(exit_menu_action)
+        help_menu = self.menuBar().addMenu("도움말(&H)")
+        self.check_update_action = QAction("업데이트 확인(&U)", self)
+        self.check_update_action.triggered.connect(self.open_update_page)
+        help_menu.addAction(self.check_update_action)
+        help_menu.addSeparator()
+        self.about_action = QAction("프로그램 정보(&A)", self)
+        self.about_action.triggered.connect(lambda: show_about(self))
+        help_menu.addAction(self.about_action)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -612,6 +625,12 @@ class MainWindow(QMainWindow):
         self.settings.update_status.setText("업데이트를 확인하고 있습니다.")
         self.controller.check_update()
 
+    @Slot()
+    def open_update_page(self):
+        self.restore_window()
+        self.select_page(PAGE_NAMES.index("settings"))
+        self.check_update()
+
     def on_update_checked(self, release, error):
         if self.quitting:
             return
@@ -631,7 +650,7 @@ class MainWindow(QMainWindow):
         self.settings.update_action.setEnabled(True)
         self.settings.update_status.setText(f"새 버전 {release.version}\n{release.notes}")
         self.last_notification_folder = None
-        self.last_notification_page = 3
+        self.last_notification_page = PAGE_NAMES.index("settings")
         self.tray.showMessage("새 버전이 있습니다", "설정에서 업데이트를 확인해 주세요.")
 
     def update_action(self):

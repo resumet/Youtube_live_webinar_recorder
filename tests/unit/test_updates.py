@@ -5,6 +5,8 @@ from threading import Event
 
 import pytest
 
+from youtube_live_recorder import UPDATE_MANIFEST_URL, __version__
+from youtube_live_recorder.config import Settings
 from youtube_live_recorder.services.updates import Release, UpdateError, UpdateService, https_url
 
 
@@ -27,6 +29,13 @@ def test_release_version_check_and_missing_server(tmp_path):
     assert service.check("https://updates.example/release.json", "1.0.0") is None
     with pytest.raises(UpdateError, match="설정"):
         service.check("", "0.1.0")
+
+
+def test_release_defaults_use_github_channel(repository):
+    settings = Settings.load(repository)
+    assert __version__ == "1.0.0"
+    assert settings.update_manifest_url == UPDATE_MANIFEST_URL
+    assert UPDATE_MANIFEST_URL.endswith("/releases/latest/download/release.json")
 
 
 @pytest.mark.parametrize(

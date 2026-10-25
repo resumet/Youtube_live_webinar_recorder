@@ -58,6 +58,12 @@ def test_window_navigation_and_required_permission(desktop, qtbot):
     assert not context.repository.list_broadcasts()
 
 
+def test_help_menu_exposes_update_and_program_information(desktop):
+    window, _, _ = desktop
+    assert window.check_update_action.text().startswith("업데이트 확인")
+    assert window.about_action.text().startswith("프로그램 정보")
+
+
 @pytest.mark.parametrize("available", [QRect(0, 0, 960, 516), QRect(1920, 0, 1280, 688)])
 def test_small_screen_keeps_window_and_scrolled_controls_reachable(
     desktop, qtbot, monkeypatch, available
@@ -219,7 +225,7 @@ def test_update_check_download_ui_never_runs_installer_without_click(desktop, qt
     window, controller, context = desktop
     content = b"MZfixture"
     release = Release(
-        "0.4.0", "https://updates.example/Setup.exe", hashlib.sha256(content).hexdigest()
+        "1.1.0", "https://updates.example/Setup.exe", hashlib.sha256(content).hexdigest()
     )
     data = json.dumps(
         {"version": release.version, "download_url": release.download_url, "sha256": release.sha256}
@@ -231,9 +237,9 @@ def test_update_check_download_ui_never_runs_installer_without_click(desktop, qt
     context.repository.set_setting("update_manifest_url", "https://updates.example/release.json")
     with qtbot.waitSignal(controller.update_checked, timeout=5000):
         window.check_update()
-    assert window.release.version == "0.4.0" and window.update_path is None
+    assert window.release.version == "1.1.0" and window.update_path is None
     window.notification_clicked()
-    assert window.stack.currentIndex() == 3
+    assert window.stack.currentIndex() == 4
     with qtbot.waitSignal(controller.update_downloaded, timeout=5000):
         window.update_action()
     assert window.update_path.is_file()

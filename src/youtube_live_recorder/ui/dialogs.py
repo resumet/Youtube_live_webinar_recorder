@@ -1,3 +1,4 @@
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -8,6 +9,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from youtube_live_recorder import REPOSITORY_URL, __version__
 from youtube_live_recorder.data.models import Broadcast, Quality
 from youtube_live_recorder.ui.widgets import label
 
@@ -24,6 +26,21 @@ def confirm(parent, title: str, text: str, accept: str) -> bool:
     message.setDefaultButton(no)
     message.exec()
     return message.clickedButton() == yes
+
+
+def show_about(parent) -> None:
+    message = QMessageBox(parent)
+    message.setWindowTitle("프로그램 정보")
+    message.setIcon(QMessageBox.Icon.Information)
+    message.setText(f"<b>YouTube Live Recorder</b><br>버전 {__version__}")
+    message.setInformativeText(
+        "허가받은 YouTube 라이브 방송을 자동으로 감지하고 저장합니다.<br><br>"
+        f'<a href="{REPOSITORY_URL}">GitHub 저장소 및 릴리스</a>'
+    )
+    message.setTextFormat(Qt.TextFormat.RichText)
+    message.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+    message.setStandardButtons(QMessageBox.StandardButton.Ok)
+    message.exec()
 
 
 class EditDialog(QDialog):

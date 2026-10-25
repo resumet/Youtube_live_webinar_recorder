@@ -1,0 +1,45 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.16"
+      - name: Install locked dependencies
+        shell: pwsh
+        run: |
+          python -m pip install uv==0.13.1
+          uv sync --frozen --group dev --group build
+      - name: Fetch verified media tools
+        shell: pwsh
+        run: |
+          .\.venv\Scripts\python.exe scripts\fetch_tools.py
+          .\scripts\fetch_inno.ps1
+      - name: Build and verify installer
+        shell: pwsh
+        run: .\scripts\build.ps1
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content src\youtube_live_recorder\__init__.py | Select-String '__version__ = "([^"]+)"').Matches.Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "태그와 프로그램 버전이 다릅니다." }
+          $installer = "dist\installer\YouTubeLiveRecorder-$version-Setup.exe"
+          gh release view "${{ github.ref_name }}" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "${{ github.ref_name }}" $installer "$installer.sha256" "dist\installer\release.json" --clobber
+          } else {
+            gh release create "${{ github.ref_name }}" $installer "$installer.sha256" "dist\installer\release.json" --title "YouTube Live Recorder $version" --generate-notes --verify-tag
+          }

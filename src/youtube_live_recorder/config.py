@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from youtube_live_recorder import UPDATE_MANIFEST_URL
 from youtube_live_recorder.data.repository import Repository
 from youtube_live_recorder.limits import DEFAULT_CONCURRENT_RECORDINGS, validate_recording_limit
 from youtube_live_recorder.utils.paths import default_save_folder
@@ -17,7 +18,7 @@ class Settings:
     min_free_bytes: int = 1024 * 1024 * 1024
     max_reconnect_attempts: int = 6
     metadata_timeout_seconds: int = 45
-    update_manifest_url: str = ""
+    update_manifest_url: str = UPDATE_MANIFEST_URL
     max_concurrent_recordings: int = DEFAULT_CONCURRENT_RECORDINGS
 
     def __post_init__(self):
@@ -30,7 +31,8 @@ class Settings:
             saved = str(default_save_folder())
             repository.set_setting("save_folder", saved)
         manifest = os.environ.get(
-            "YLR_UPDATE_MANIFEST_URL", repository.get_setting("update_manifest_url", "")
+            "YLR_UPDATE_MANIFEST_URL",
+            repository.get_setting("update_manifest_url", UPDATE_MANIFEST_URL),
         )
         if not isinstance(manifest, str) or (manifest and not manifest.startswith("https://")):
             manifest = ""
